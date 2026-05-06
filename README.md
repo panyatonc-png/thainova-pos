@@ -1,0 +1,2 @@
+# thainova-pos
+Store managements
