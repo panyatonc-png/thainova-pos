@@ -1656,12 +1656,17 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
     st.markdown("---")
     if st.button("💰 คำนวณราคาจัดส่ง", key="del_calc",
                  type="primary", use_container_width=True):
-        # ── Step 1: auto-geocode ถ้ายังไม่มีพิกัด ──────────────
+        # ── Step 1: resolve พิกัดปลายทาง ──────────────────────────
         _lat, _lng = dest_lat, dest_lng
-        if not _lat:
-            if not addr_txt:
-                st.error("❌ กรุณากรอกที่อยู่ปลายทาง")
-                st.stop()
+        if _lat:
+            # มีพิกัดจากแผนที่แล้ว — ถ้า addr ว่างให้ reverse geocode เติมให้
+            if not dest_addr:
+                with st.spinner("🔍 กำลังดึงชื่อที่อยู่..."):
+                    _, _, _rfmt = geocode(f"{_lat},{_lng}", mk)
+                if _rfmt:
+                    st.session_state.checkout_addr = _rfmt
+        elif addr_txt:
+            # ไม่มีพิกัด แต่มีข้อความ → geocode
             with st.spinner("🔍 กำลังค้นหาที่อยู่..."):
                 _lat, _lng, _fmt = geocode(addr_txt, mk)
             if _lat:
@@ -1672,6 +1677,10 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
             else:
                 st.error("❌ ไม่พบที่อยู่นี้ กรุณาพิมพ์ให้ละเอียดขึ้น เช่น ถนน แขวง เขต จังหวัด")
                 st.stop()
+        else:
+            # ไม่มีทั้งพิกัดและข้อความ
+            st.error("❌ กรุณาปักหมุดบนแผนที่ หรือกรอกที่อยู่ปลายทาง")
+            st.stop()
 
         # ── Step 2: validate fields อื่น ────────────────────────
         missing = []
