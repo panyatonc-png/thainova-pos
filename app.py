@@ -1221,7 +1221,15 @@ function setConfirmed(addr,lat,lng){
   document.getElementById('con-name').textContent=sh;
   document.getElementById('con-coords').textContent=(lat.toFixed?lat.toFixed(5):lat)+', '+(lng.toFixed?lng.toFixed(5):lng);
   document.getElementById('sum-dest').textContent=sh;
-  toast('✅ ปักหมุดแล้ว! คัดลอกที่อยู่ด้านล่าง แล้วกด ยืนยันที่อยู่');
+  toast('✅ ปักหมุดแล้ว! กำลังส่งที่อยู่ไปยังฟอร์ม...');
+  try{
+    var p=new URLSearchParams(window.parent.location.search);
+    p.set('_dlat',lat.toFixed?lat.toFixed(6):String(lat));
+    p.set('_dlng',lng.toFixed?lng.toFixed(6):String(lng));
+    p.set('_daddr',addr);
+    window.parent.history.replaceState(null,'',window.parent.location.pathname+'?'+p.toString());
+    window.parent.dispatchEvent(new PopStateEvent('popstate',{bubbles:true}));
+  }catch(e){}
 }
 function changeAddr(){
   confirmed=false;
@@ -1250,6 +1258,19 @@ function selectSched(s){
 def page_delivery():
     lk, ls, mk, pp_phone, keys_ok = get_secrets()
     import streamlit.components.v1 as components
+
+    # ── รับพิกัด+ที่อยู่จากแผนที่ผ่าน query params ──────────────────
+    _qp = st.query_params
+    if "_dlat" in _qp and "_dlng" in _qp:
+        try:
+            st.session_state.checkout_lat      = float(_qp["_dlat"])
+            st.session_state.checkout_lng      = float(_qp["_dlng"])
+            st.session_state.checkout_addr     = _qp.get("_daddr", "")
+            st.session_state.checkout_quote_id = None
+        except (ValueError, KeyError):
+            pass
+        st.query_params.clear()
+        st.rerun()
 
     from_cart = bool(st.session_state.cart)
 
