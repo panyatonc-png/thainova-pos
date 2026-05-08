@@ -1,5 +1,9 @@
 streamlit
 pandas
 gspread
-google-cloud-spreadsheet
+google-auth
+st-gsheets-connection
 requests
+qrcode[pil]
+folium
+streamlit-folium
