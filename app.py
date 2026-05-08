@@ -371,36 +371,53 @@ def get_quotation(dlat, dlng, service, lkey, lsecret):
                           data=body.encode(), timeout=10)
         d = r.json()
         if r.status_code in [200,201]:
-            data = d.get("data",d)
-            dist = int(data.get("distance",{}).get("value",0))
-            return {"ok":True,"quotation_id":data.get("quotationId",""),
-                    "price":data.get("priceBreakdown",{}).get("total","-"),
-                    "distance":f"{dist/1000:.1f} km"}
-        return {"ok":False,"error":str(d)}
+            data  = d.get("data", d)
+            dist  = int(data.get("distance",{}).get("value", 0))
+            stops = data.get("stops", [])
+            # ดึง stopId จริงจาก quotation response — ต้องใช้ตอน create order
+            stop_sender    = stops[0].get("stopId","1") if len(stops) > 0 else "1"
+            stop_recipient = stops[1].get("stopId","2") if len(stops) > 1 else "2"
+            return {"ok":True,
+                    "quotation_id":  data.get("quotationId",""),
+                    "price":         data.get("priceBreakdown",{}).get("total","-"),
+                    "distance":      f"{dist/1000:.1f} km",
+                    "stop_sender":   stop_sender,
+                    "stop_recipient":stop_recipient}
+        return {"ok":False,"error":d}
     except Exception as e:
         return {"ok":False,"error":str(e)}
 
-def create_lala_order(quote_id, dlat, dlng, daddr, cname, cphone, lkey, lsecret, is_pod=False):
+def create_lala_order(quote_id, stop_sender, stop_recipient, cname, cphone, lkey, lsecret, is_pod=False):
+    """สร้าง Lalamove order ด้วย quotationId และ stopId จริงจาก get_quotation()
+    Endpoint: https://rest.sandbox.lalamove.com (Sandbox)
+    """
     path = "/v3/orders"
-    body = json.dumps({"data":{
+    body_dict = {"data":{
         "quotationId": quote_id,
-        "sender":{"stopId":"1","name":"ThaiNova AutoPaint","phone":"+66870799199"},
-        "recipients":[{"stopId":"2","name":cname,"phone":cphone,
+        "sender":    {"stopId": stop_sender,    "name":"ThaiNova AutoPaint","phone":"+66870799199"},
+        "recipients":[{"stopId": stop_recipient, "name":cname, "phone":cphone,
                        "remarks":"สีพ่นรถยนต์ ThaiNova"}],
-        "isPODEnabled": is_pod
-    }},separators=(',',':'))
+        "isPODEnabled": is_pod,
+    }}
+    body = json.dumps(body_dict, separators=(',',':'))
+    headers = _lala_sign(lkey, lsecret, "POST", path, body)
     try:
         r = requests.post("https://rest.sandbox.lalamove.com"+path,
-                          headers=_lala_sign(lkey,lsecret,"POST",path,body),
-                          data=body.encode(), timeout=10)
+                          headers=headers, data=body.encode(), timeout=10)
         d = r.json()
-        if r.status_code in [200,201]:
-            od = d.get("data",d)
-            return {"ok":True,"order_id":od.get("orderId",""),
-                    "share_link":od.get("shareLink","")}
-        return {"ok":False,"error":str(d)}
+        debug = {
+            "endpoint":     "https://rest.sandbox.lalamove.com" + path,
+            "status_code":  r.status_code,
+            "request_body": body_dict,   # ไม่มี api_secret ใน body
+            "response":     d,
+        }
+        if r.status_code in [200, 201]:
+            od = d.get("data", d)
+            return {"ok":True,  "order_id":od.get("orderId",""),
+                    "share_link":od.get("shareLink",""), "debug":debug}
+        return {"ok":False, "error":d, "debug":debug}
     except Exception as e:
-        return {"ok":False,"error":str(e)}
+        return {"ok":False, "error":str(e), "debug":None}
 
 def geocode(addr, mkey=""):
     # Google Maps (ถ้ามี API key)
@@ -1133,16 +1150,19 @@ def page_checkout():
                 with st.spinner("กำลังสร้าง Lalamove order..."):
                     lo = create_lala_order(
                         st.session_state.checkout_quote_id,
-                        st.session_state.checkout_lat, st.session_state.checkout_lng,
-                        st.session_state.checkout_addr,
+                        st.session_state.get("checkout_stop_sender",    "1"),
+                        st.session_state.get("checkout_stop_recipient", "2"),
                         st.session_state.cust_name, st.session_state.cust_phone,
                         lk, ls, is_pod=is_pod
                     )
+                if lo.get("debug"):
+                    with st.expander("🔍 Lalamove Debug Response", expanded=not lo["ok"]):
+                        st.json(lo["debug"])
                 if lo["ok"]:
                     lala_order_id = lo["order_id"]
                     share_link    = lo["share_link"]
                 else:
-                    st.warning(f"⚠️ Lalamove order ยังไม่สมบูรณ์: {lo['error']}")
+                    st.error(f"❌ Lalamove create order ล้มเหลว: {lo['error']}")
 
             # Save order
             try_save_order({
@@ -1740,10 +1760,12 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
             with st.spinner("🚀 กำลังคำนวณราคาจัดส่ง..."):
                 q = get_quotation(_lat, _lng, veh_sel, lk, ls)
             if q["ok"]:
-                st.session_state.checkout_quote_id    = q["quotation_id"]
-                st.session_state.checkout_quote_price = q["price"]
-                st.session_state.checkout_quote_dist  = q["distance"]
-                st.session_state.checkout_vehicle     = veh_sel
+                st.session_state.checkout_quote_id       = q["quotation_id"]
+                st.session_state.checkout_quote_price    = q["price"]
+                st.session_state.checkout_quote_dist     = q["distance"]
+                st.session_state.checkout_vehicle        = veh_sel
+                st.session_state.checkout_stop_sender    = q["stop_sender"]
+                st.session_state.checkout_stop_recipient = q["stop_recipient"]
                 st.rerun()
             else:
                 fallback = str(VEHICLES[veh_sel]["price"])
@@ -1899,12 +1921,17 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                     with st.spinner("กำลังสร้าง Lalamove order..."):
                         lo = create_lala_order(
                             st.session_state.checkout_quote_id,
-                            dest_lat, dest_lng, dest_addr,
+                            st.session_state.get("checkout_stop_sender",    "1"),
+                            st.session_state.get("checkout_stop_recipient", "2"),
                             cust_name, cust_phone, lk, ls, is_pod=is_pod)
+                    if lo.get("debug"):
+                        with st.expander("🔍 Lalamove Debug Response", expanded=not lo["ok"]):
+                            st.json(lo["debug"])
                     if lo["ok"]:
                         lala_order_id = lo["order_id"]; share_link = lo["share_link"]
                     else:
-                        st.warning(f"⚠️ Lalamove: {lo['error']}")
+                        st.error(f"❌ Lalamove create order ล้มเหลว:\n{lo['error']}")
+                        st.stop()
                 try_save_order({
                     "OrderID": order_id, "DateTime": datetime.now().isoformat(),
                     "CustomerName": cust_name, "CustomerPhone": cust_phone,
@@ -1936,13 +1963,18 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                         with st.spinner("กำลังสร้าง Order..."):
                             lo = create_lala_order(
                                 st.session_state.checkout_quote_id,
-                                dest_lat, dest_lng, dest_addr, rn, rp, lk, ls)
+                                st.session_state.get("checkout_stop_sender",    "1"),
+                                st.session_state.get("checkout_stop_recipient", "2"),
+                                rn, rp, lk, ls)
+                        if lo.get("debug"):
+                            with st.expander("🔍 Lalamove Debug Response", expanded=not lo["ok"]):
+                                st.json(lo["debug"])
                         if lo["ok"]:
                             st.success(f"🎉 Order สำเร็จ! ID: {lo['order_id']}")
                             if lo["share_link"]: st.link_button("📍 ติดตาม Driver", lo["share_link"])
                             st.session_state.checkout_quote_id = None
                         else:
-                            st.error(f"❌ {lo['error']}")
+                            st.error(f"❌ Lalamove: {lo['error']}")
                     else:
                         st.error("กรุณากรอกชื่อและเบอร์โทร")
 
