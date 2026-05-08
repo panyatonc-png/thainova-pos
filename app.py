@@ -565,19 +565,22 @@ def page_home(stock_df):
 def page_shop(stock_df):
     st.markdown('<div class="sec-title">สินค้าทั้งหมด</div>', unsafe_allow_html=True)
     cats = list(stock_df['CategoryName'].dropna().unique()) if 'CategoryName' in stock_df.columns else []
-    all_cats = ["ทั้งหมด"] + cats[:10]
+    all_cats = ["ทั้งหมด"] + cats
 
-    # Category chips
-    chip_cols = st.columns(min(len(all_cats), 6))
-    for i, cat in enumerate(all_cats[:6]):
-        is_active = (st.session_state.sel_cat == cat)
-        if chip_cols[i].button(
-            ("🔴 " if is_active else "") + cat,
-            key=f"chip_{cat}", use_container_width=True,
-            type="primary" if is_active else "secondary"
-        ):
-            st.session_state.sel_cat = cat
-            st.rerun()
+    # Category chips — หลายแถว, 6 ปุ่มต่อแถว
+    COLS_PER_ROW = 6
+    for row_start in range(0, len(all_cats), COLS_PER_ROW):
+        row_cats = all_cats[row_start : row_start + COLS_PER_ROW]
+        chip_cols = st.columns(len(row_cats))
+        for i, cat in enumerate(row_cats):
+            is_active = (st.session_state.sel_cat == cat)
+            if chip_cols[i].button(
+                ("🔴 " if is_active else "") + cat,
+                key=f"chip_{cat}", use_container_width=True,
+                type="primary" if is_active else "secondary"
+            ):
+                st.session_state.sel_cat = cat
+                st.rerun()
 
     search = st.text_input("", placeholder="🔍 ค้นหาสินค้า, เบอร์สี, ยี่ห้อ...",
                            label_visibility="collapsed", key="shop_search")
