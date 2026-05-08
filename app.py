@@ -1570,8 +1570,8 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
     st.markdown(
         '<div style="background:rgba(232,25,44,.05);border:1px solid rgba(232,25,44,.15);'
         'border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:12px;color:var(--muted)">'
-        '📍 ค้นหา/ปักหมุดบนแผนที่ด้านบน กด <strong>"✓ ยืนยันตำแหน่งนี้"</strong> '
-        '→ คัดลอกที่อยู่ → วางในช่องด้านล่าง → กด <strong>"🔍 ยืนยันที่อยู่"</strong>'
+        '📍 ปักหมุดบนแผนที่ด้านบน หรือพิมพ์ที่อยู่ปลายทางในช่องด้านล่าง '
+        'จากนั้นเลือกยานพาหนะ แล้วกด <strong>"💰 คำนวณราคาจัดส่ง"</strong> ได้เลย'
         '</div>', unsafe_allow_html=True)
 
     col_a, col_b = st.columns([5, 1])
@@ -1587,19 +1587,6 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
             st.session_state.checkout_lng      = None
             st.session_state.checkout_quote_id = None
             st.rerun()
-
-    if st.button("🔍 ยืนยันที่อยู่", key="del_geocode",
-                 use_container_width=True, disabled=not addr_txt):
-        with st.spinner("🔍 กำลังค้นหาที่อยู่..."):
-            lat, lng, fmt = geocode(addr_txt, mk)
-        if lat:
-            st.session_state.checkout_lat      = lat
-            st.session_state.checkout_lng      = lng
-            st.session_state.checkout_addr     = fmt
-            st.session_state.checkout_quote_id = None
-            st.rerun()
-        else:
-            st.error("❌ ไม่พบที่อยู่นี้ — ลองพิมพ์ให้ละเอียดขึ้น หรือใส่ชื่อถนน/เขต")
 
     if dest_lat:
         st.markdown(
@@ -1669,9 +1656,25 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
     st.markdown("---")
     if st.button("💰 คำนวณราคาจัดส่ง", key="del_calc",
                  type="primary", use_container_width=True):
+        # ── Step 1: auto-geocode ถ้ายังไม่มีพิกัด ──────────────
+        _lat, _lng = dest_lat, dest_lng
+        if not _lat:
+            if not addr_txt:
+                st.error("❌ กรุณากรอกที่อยู่ปลายทาง")
+                st.stop()
+            with st.spinner("🔍 กำลังค้นหาที่อยู่..."):
+                _lat, _lng, _fmt = geocode(addr_txt, mk)
+            if _lat:
+                st.session_state.checkout_lat      = _lat
+                st.session_state.checkout_lng      = _lng
+                st.session_state.checkout_addr     = _fmt
+                st.session_state.checkout_quote_id = None
+            else:
+                st.error("❌ ไม่พบที่อยู่นี้ กรุณาพิมพ์ให้ละเอียดขึ้น เช่น ถนน แขวง เขต จังหวัด")
+                st.stop()
+
+        # ── Step 2: validate fields อื่น ────────────────────────
         missing = []
-        if not dest_lat:
-            missing.append("ที่อยู่ปลายทาง (กด 🔍 ยืนยันที่อยู่ ก่อน)")
         if from_cart and not cust_name:
             missing.append("ชื่อ-นามสกุลผู้รับ")
         if from_cart and not cust_phone:
@@ -1682,7 +1685,7 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                      "\n".join(f"  • {m}" for m in missing))
         elif keys_ok:
             with st.spinner("🚀 กำลังคำนวณราคาจัดส่ง..."):
-                q = get_quotation(dest_lat, dest_lng, veh_sel, lk, ls)
+                q = get_quotation(_lat, _lng, veh_sel, lk, ls)
             if q["ok"]:
                 st.session_state.checkout_quote_id    = q["quotation_id"]
                 st.session_state.checkout_quote_price = q["price"]
