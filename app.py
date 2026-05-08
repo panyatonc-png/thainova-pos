@@ -1209,7 +1209,9 @@ def page_confirmed():
 
 
 def _shared_js():
-    """Shared JS — setConfirmed ส่งพิกัดขึ้น Streamlit ผ่าน URL query params."""
+    """Shared vehicle/schedule/confirm JS สำหรับ delivery iframe.
+    Visual-only — ไม่มี postMessage (Streamlit sandbox บล็อกทั้งหมด)
+    พิกัดถึง Python ผ่าน text_input + ปุ่ม ยืนยันที่อยู่ ด้านล่าง"""
     return """
 function setConfirmed(addr,lat,lng){
   confirmed=true;
@@ -1217,31 +1219,14 @@ function setConfirmed(addr,lat,lng){
   document.getElementById('con-card').style.display='flex';
   const sh=addr.length>50?addr.substring(0,50)+'...':addr;
   document.getElementById('con-name').textContent=sh;
-  document.getElementById('con-coords').textContent=lat.toFixed?lat.toFixed(5)+', '+lng.toFixed(5):lat+', '+lng;
+  document.getElementById('con-coords').textContent=(lat.toFixed?lat.toFixed(5):lat)+', '+(lng.toFixed?lng.toFixed(5):lng);
   document.getElementById('sum-dest').textContent=sh;
-  const btn=document.getElementById('calc-btn');
-  btn.disabled=false;btn.style.background='#E8192C';btn.style.color='#fff';
-  // ส่งพิกัดขึ้น Streamlit ผ่าน parent URL (วิธีเดียวที่ทำงานได้กับ iframe sandboxed)
-  try{
-    const u=new URL(window.parent.location.href);
-    u.searchParams.set('dlat', typeof lat.toFixed==='function'?lat.toFixed(6):lat);
-    u.searchParams.set('dlng', typeof lng.toFixed==='function'?lng.toFixed(6):lng);
-    u.searchParams.set('daddr', addr);
-    window.parent.history.replaceState(null,'',u.toString());
-  }catch(e){}
-  toast('✅ ปักหมุดแล้ว! กดปุ่ม คำนวณราคา ด้านล่าง');
+  toast('✅ ปักหมุดแล้ว! คัดลอกที่อยู่ด้านล่าง แล้วกด ยืนยันที่อยู่');
 }
 function changeAddr(){
   confirmed=false;
   document.getElementById('map-wrap').style.display='block';
   document.getElementById('con-card').style.display='none';
-  const btn=document.getElementById('calc-btn');
-  btn.disabled=true;btn.style.background='#2a2a2a';btn.style.color='#888';
-  try{
-    const u=new URL(window.parent.location.href);
-    u.searchParams.delete('dlat');u.searchParams.delete('dlng');u.searchParams.delete('daddr');
-    window.parent.history.replaceState(null,'',u.toString());
-  }catch(e){}
 }
 function selectV(k,el){
   ['MOTORCYCLE','CAR','VAN'].forEach(v=>{
@@ -1255,25 +1240,10 @@ function selectV(k,el){
   document.getElementById('sum-price').style.color='var(--gd)';
   document.getElementById('pnote').textContent='(ประมาณ)';
   document.getElementById('pnote').style.color='var(--gd)';
-  window.parent.postMessage({type:'setVehicle',vehicle:k},'*');
 }
 function selectSched(s){
   document.getElementById('sched-now').classList.toggle('sel',s==='now');
   document.getElementById('sched-later').classList.toggle('sel',s==='later');
-  window.parent.postMessage({type:'setSched',sched:s},'*');
-}
-function sendCalc(){
-  if(!confirmed){toast('กรุณาปักหมุดก่อน');return;}
-  document.getElementById('calc-btn').textContent='⏳ กำลังคำนวณ...';
-  document.getElementById('calc-btn').disabled=true;
-  // navigate parent เพื่อ trigger Streamlit rerun พร้อม do_calc flag
-  try{
-    const u=new URL(window.parent.location.href);
-    u.searchParams.set('dlat', typeof curLat.toFixed==='function'?curLat.toFixed(6):curLat);
-    u.searchParams.set('dlng', typeof curLng.toFixed==='function'?curLng.toFixed(6):curLng);
-    u.searchParams.set('do_calc','1');
-    window.parent.location.href=u.toString();
-  }catch(e){toast('กดปุ่มคำนวณราคาด้านล่างได้เลย');}
 }"""
 
 
@@ -1555,12 +1525,7 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
     <span class="sumprice" id="sum-price" style="color:{price_color}">฿{disp_price}</span>
   </div>
 </div>
-<button class="cbtn" id="calc-btn" onclick="sendCalc()"
-  style="background:{'#E8192C' if is_confirmed else '#2a2a2a'};color:{'#fff' if is_confirmed else '#888'}"
-  {'disabled' if not is_confirmed else ''}>
-  💰 คำนวณราคาจริงจาก Lalamove
-</button>
-{map_js if use_google else ''}
+{map_js}
 </body></html>"""
 
     render_nav(show_cart=False)
@@ -1593,78 +1558,130 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
         )
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Big delivery iframe ──────────────────────────────────────
-    components.html(html, height=980, scrolling=True)
+    # ── Big delivery iframe (แผนที่ + vehicle display) ──────────
+    components.html(html, height=870, scrolling=True)
     st.divider()
 
-    # ── รับพิกัดจาก iframe ผ่าน URL query_params ────────────────
-    qp = st.query_params
-    if qp.get("dlat") and qp.get("dlng"):
-        try:
-            p_lat  = float(qp["dlat"])
-            p_lng  = float(qp["dlng"])
-            p_addr = qp.get("daddr", f"{p_lat:.5f},{p_lng:.5f}")
-            changed = st.session_state.checkout_lat != p_lat
-            if changed:
-                st.session_state.checkout_lat      = p_lat
-                st.session_state.checkout_lng      = p_lng
-                st.session_state.checkout_addr     = p_addr
-                st.session_state.checkout_quote_id = None
-            # ถ้ากด calc-btn จาก iframe → คำนวณทันทีเลย
-            if qp.get("do_calc") == "1":
-                st.query_params.clear()
-                if keys_ok:
-                    with st.spinner("💰 กำลังคำนวณ Lalamove..."):
-                        q = get_quotation(p_lat, p_lng,
-                                          st.session_state.checkout_vehicle, lk, ls)
-                    if q["ok"]:
-                        st.session_state.checkout_quote_id    = q["quotation_id"]
-                        st.session_state.checkout_quote_price = q["price"]
-                        st.session_state.checkout_quote_dist  = q["distance"]
-                st.rerun()
-            elif changed:
-                st.rerun()   # rerun เพื่อให้ปุ่มคำนวณ active
-        except Exception:
-            pass
+    # ══════════════════════════════════════════════════════════════
+    # STREAMLIT CHECKOUT — Single-pass, one calculate button
+    # ══════════════════════════════════════════════════════════════
 
-    # refresh local vars หลัง rerun
-    dest_lat  = st.session_state.checkout_lat
-    dest_lng  = st.session_state.checkout_lng
-    dest_addr = st.session_state.checkout_addr or ""
-    is_confirmed = dest_lat is not None
-    addr_short = dest_addr[:50]+"..." if len(dest_addr)>50 else dest_addr
+    # ── ขั้นตอนที่ 1: ยืนยันที่อยู่ปลายทาง ─────────────────────
+    st.markdown(
+        '<div style="background:rgba(232,25,44,.05);border:1px solid rgba(232,25,44,.15);'
+        'border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:12px;color:var(--muted)">'
+        '📍 ค้นหา/ปักหมุดบนแผนที่ด้านบน กด <strong>"✓ ยืนยันตำแหน่งนี้"</strong> '
+        '→ คัดลอกที่อยู่ → วางในช่องด้านล่าง → กด <strong>"🔍 ยืนยันที่อยู่"</strong>'
+        '</div>', unsafe_allow_html=True)
 
-    veh_sel = st.session_state.checkout_vehicle
+    col_a, col_b = st.columns([5, 1])
+    with col_a:
+        addr_txt = st.text_input("📍 ที่อยู่ปลายทาง:",
+            value=dest_addr,
+            key="del_addr",
+            placeholder="เช่น 123 ถนนลาดพร้าว แขวงจอมพล เขตจตุจักร กรุงเทพฯ")
+    with col_b:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if dest_lat and st.button("🔄", key="del_clr", use_container_width=True, help="รีเซ็ตที่อยู่"):
+            st.session_state.checkout_lat      = None
+            st.session_state.checkout_lng      = None
+            st.session_state.checkout_quote_id = None
+            st.rerun()
 
-    # ── แสดงสถานะที่อยู่ + ปุ่มคำนวณ ────────────────────────────
-    if is_confirmed:
-        st.markdown(f"""
-        <div style="background:rgba(74,222,128,.06);border:1px solid rgba(74,222,128,.25);
-             border-radius:8px;padding:10px 14px;font-size:12px;margin-bottom:10px;
-             display:flex;align-items:center;gap:8px">
-          <span style="font-size:16px">✅</span>
-          <div>
-            <div style="font-weight:600;color:#f0f0f0">{addr_short}</div>
-            <div style="font-size:10px;color:#4ade80;font-family:monospace;margin-top:2px">
-              {dest_lat:.5f}, {dest_lng:.5f}
-            </div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div style="background:rgba(232,25,44,.06);border:1px solid rgba(232,25,44,.25);
-             border-radius:8px;padding:10px 14px;font-size:12px;color:#E8192C;margin-bottom:10px">
-          💡 <strong>ลากแผนที่</strong>ด้านบนไปยังตำแหน่งที่ต้องการ → กด
-          <strong>ยืนยันตำแหน่งนี้</strong> → กดปุ่มคำนวณด้านล่าง
-        </div>
-        """, unsafe_allow_html=True)
+    if st.button("🔍 ยืนยันที่อยู่", key="del_geocode",
+                 use_container_width=True, disabled=not addr_txt):
+        with st.spinner("🔍 กำลังค้นหาที่อยู่..."):
+            lat, lng, fmt = geocode(addr_txt, mk)
+        if lat:
+            st.session_state.checkout_lat      = lat
+            st.session_state.checkout_lng      = lng
+            st.session_state.checkout_addr     = fmt
+            st.session_state.checkout_quote_id = None
+            st.rerun()
+        else:
+            st.error("❌ ไม่พบที่อยู่นี้ — ลองพิมพ์ให้ละเอียดขึ้น หรือใส่ชื่อถนน/เขต")
 
-    if st.button("💰 คำนวณราคาจัดส่ง", use_container_width=True,
-                 type="primary", key="del_calc",
-                 disabled=not is_confirmed):
-        if keys_ok:
-            with st.spinner("💰 กำลังคำนวณราคา Lalamove..."):
+    if dest_lat:
+        st.markdown(
+            f'<div class="addr-box">'
+            f'<span style="color:#4ade80;font-weight:700">✓ ที่อยู่:</span> {dest_addr}<br>'
+            f'<span style="font-size:10px;color:var(--muted);font-family:monospace">'
+            f'{dest_lat:.5f}, {dest_lng:.5f}</span></div>',
+            unsafe_allow_html=True)
+
+    # ── ขั้นตอนที่ 2: เลือกยานพาหนะ ────────────────────────────
+    st.markdown(
+        '<div style="font-size:11px;color:var(--muted);letter-spacing:.5px;'
+        'text-transform:uppercase;margin:14px 0 6px">🚗 เลือกยานพาหนะ</div>',
+        unsafe_allow_html=True)
+    veh_sel = st.selectbox("", list(VEHICLES.keys()),
+        format_func=lambda k: f"{VEHICLES[k]['label']}  ·  ฿{VEHICLES[k]['price']}  ·  {VEHICLES[k]['eta']}",
+        index=list(VEHICLES.keys()).index(st.session_state.checkout_vehicle),
+        key="del_veh_sel", label_visibility="collapsed")
+
+    # ── ขั้นตอนที่ 3: ผู้ชำระค่าจัดส่ง ─────────────────────────
+    st.markdown(
+        '<div style="font-size:11px;color:var(--muted);letter-spacing:.5px;'
+        'text-transform:uppercase;margin:14px 0 6px">💳 ผู้ชำระค่าจัดส่ง</div>',
+        unsafe_allow_html=True)
+    lala_pay_opts = [
+        "🏪 ร้านค้าชำระ (ThaiNova จ่ายค่าส่งให้ Lalamove)",
+        "💵 ลูกค้าชำระ — Driver เก็บเงินสดที่ปลายทาง (POD)",
+        "🏦 ลูกค้าชำระ — โอนเงินค่าส่งให้ร้านก่อนจัดส่ง",
+    ]
+    pay_type_idx = {"sender":0,"recipient_cash":1,"recipient_transfer":2}.get(
+        st.session_state.lala_pay_type, 0)
+    lala_pay = st.radio("", lala_pay_opts,
+        index=pay_type_idx, key="del_lala_pay", label_visibility="collapsed")
+    lala_pay_key = ["sender","recipient_cash","recipient_transfer"][lala_pay_opts.index(lala_pay)]
+    st.session_state.lala_pay_type = lala_pay_key
+
+    if lala_pay_key == "recipient_cash":
+        st.markdown(
+            '<div style="background:rgba(201,168,76,.08);border:1px solid rgba(201,168,76,.25);'
+            'border-radius:7px;padding:8px 12px;font-size:11px;color:#C9A84C;margin-bottom:4px">'
+            '⚠️ Driver จะเก็บค่าจัดส่งจากผู้รับเป็นเงินสด (POD)</div>',
+            unsafe_allow_html=True)
+    elif lala_pay_key == "recipient_transfer":
+        st.markdown(
+            '<div style="background:rgba(74,222,128,.06);border:1px solid rgba(74,222,128,.2);'
+            'border-radius:7px;padding:8px 12px;font-size:11px;color:#4ade80;margin-bottom:4px">'
+            '📲 ลูกค้าโอนค่าจัดส่งให้ร้านก่อน — PromptPay: <strong>062-737-7700</strong></div>',
+            unsafe_allow_html=True)
+
+    # ── ขั้นตอนที่ 4: ข้อมูลผู้รับ (from_cart เท่านั้น) ────────
+    cust_name  = ""
+    cust_phone = ""
+    if from_cart:
+        st.markdown('<div class="co-section" style="margin-top:14px">', unsafe_allow_html=True)
+        st.markdown('<div class="co-section-title">👤 ข้อมูลผู้รับ</div>', unsafe_allow_html=True)
+        cust_name  = st.text_input("ชื่อ-นามสกุล / ชื่ออู่ *",
+            value=st.session_state.cust_name, key="del_name",
+            placeholder="เช่น อู่ซ่อมรถ ลาดพร้าว")
+        cust_phone = st.text_input("เบอร์โทร *",
+            value=st.session_state.cust_phone, key="del_phone",
+            placeholder="0XX-XXX-XXXX")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════════
+    # ปุ่มคำนวณราคาเพียงปุ่มเดียว — validate ครบ → call API → fallback
+    # ══════════════════════════════════════════════════════════════
+    st.markdown("---")
+    if st.button("💰 คำนวณราคาจัดส่ง", key="del_calc",
+                 type="primary", use_container_width=True):
+        missing = []
+        if not dest_lat:
+            missing.append("ที่อยู่ปลายทาง (กด 🔍 ยืนยันที่อยู่ ก่อน)")
+        if from_cart and not cust_name:
+            missing.append("ชื่อ-นามสกุลผู้รับ")
+        if from_cart and not cust_phone:
+            missing.append("เบอร์โทรผู้รับ")
+
+        if missing:
+            st.error("❌ ข้อมูลยังไม่ครบ กรุณากรอก:\n" +
+                     "\n".join(f"  • {m}" for m in missing))
+        elif keys_ok:
+            with st.spinner("🚀 กำลังคำนวณราคาจัดส่ง..."):
                 q = get_quotation(dest_lat, dest_lng, veh_sel, lk, ls)
             if q["ok"]:
                 st.session_state.checkout_quote_id    = q["quotation_id"]
@@ -1673,60 +1690,53 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                 st.session_state.checkout_vehicle     = veh_sel
                 st.rerun()
             else:
-                st.error(f"❌ Lalamove: {q['error']}")
+                fallback = str(VEHICLES[veh_sel]["price"])
+                st.warning(f"⚠️ Lalamove API: {q['error']}\n\n"
+                           f"ใช้ราคาประมาณ ฿{fallback} แทน")
+                st.session_state.checkout_quote_id    = "estimate"
+                st.session_state.checkout_quote_price = fallback
+                st.session_state.checkout_quote_dist  = ""
+                st.session_state.checkout_vehicle     = veh_sel
+                st.rerun()
         else:
-            st.error("⚠️ ตั้งค่า Lalamove API key ใน secrets.toml")
+            # ไม่มี Lalamove API key — fallback ทันที
+            fallback = str(VEHICLES[veh_sel]["price"])
+            st.session_state.checkout_quote_id    = "estimate"
+            st.session_state.checkout_quote_price = fallback
+            st.session_state.checkout_quote_dist  = ""
+            st.session_state.checkout_vehicle     = veh_sel
+            st.rerun()
 
+    if not keys_ok and not has_quote:
+        st.caption("ℹ️ ไม่มี Lalamove API key — จะใช้ราคาประมาณ")
+
+    # ══════════════════════════════════════════════════════════════
+    # แสดงผลราคา + checkout (หลังคำนวณสำเร็จ)
+    # ══════════════════════════════════════════════════════════════
     if has_quote:
-        st.success(
-            f"✅ ค่าส่ง ({VEHICLES[st.session_state.checkout_vehicle]['label']}): "
-            f"**฿{q_price}** · ระยะทาง: {q_dist}"
-        )
+        is_estimate = st.session_state.checkout_quote_id == "estimate"
+        pc  = "#C9A84C" if is_estimate else "#4ade80"
+        pb  = "rgba(201,168,76,.08)" if is_estimate else "rgba(74,222,128,.08)"
+        pb2 = "rgba(201,168,76,.3)"  if is_estimate else "rgba(74,222,128,.3)"
+        p_icon = "⚠️" if is_estimate else "✅"
+        p_note = "ราคาประมาณ" if is_estimate else "ราคาจริง Lalamove ✓"
+        dist_line = (f'<div style="font-size:11px;color:var(--muted)">📏 ระยะทาง: {q_dist}</div>'
+                     if q_dist and not is_estimate else "")
 
-    # ── Who pays shipping ────────────────────────────────────────
-    if dest_lat:
-        st.markdown('<div style="margin-top:12px;font-size:11px;color:var(--muted);'
-                    'letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px">'
-                    '💳 ผู้ชำระค่าจัดส่ง</div>', unsafe_allow_html=True)
-        lala_pay_opts = [
-            "🏪 ร้านค้าชำระ (ThaiNova จ่ายค่าส่งให้ Lalamove)",
-            "💵 ลูกค้าชำระ — Driver เก็บเงินสดที่ปลายทาง (POD)",
-            "🏦 ลูกค้าชำระ — โอนเงินค่าส่งให้ร้านก่อนจัดส่ง",
-        ]
-        pay_type_idx = {"sender":0,"recipient_cash":1,"recipient_transfer":2}.get(
-            st.session_state.lala_pay_type, 0)
-        lala_pay = st.radio("", lala_pay_opts,
-            index=pay_type_idx, key="del_lala_pay", label_visibility="collapsed")
-        lala_pay_key = ["sender","recipient_cash","recipient_transfer"][lala_pay_opts.index(lala_pay)]
-        st.session_state.lala_pay_type = lala_pay_key
+        st.markdown(
+            f'<div style="background:{pb};border:1px solid {pb2};'
+            f'border-radius:10px;padding:14px 18px;margin:8px 0">'
+            f'<div style="font-size:11px;color:{pc};margin-bottom:4px">'
+            f'{p_icon} ค่าจัดส่ง ({VEHICLES[st.session_state.checkout_vehicle]["label"]}) — {p_note}</div>'
+            f'<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:42px;'
+            f'font-weight:700;color:{pc};line-height:1">฿{q_price}</div>'
+            f'{dist_line}</div>', unsafe_allow_html=True)
 
-        if lala_pay_key == "recipient_cash":
-            st.markdown("""<div style="background:rgba(201,168,76,.08);border:1px solid rgba(201,168,76,.25);
-            border-radius:7px;padding:8px 12px;font-size:11px;color:#C9A84C;margin-bottom:8px">
-            ⚠️ Driver จะเก็บค่าจัดส่งจากผู้รับเป็นเงินสด (POD)
-            </div>""", unsafe_allow_html=True)
-        elif lala_pay_key == "recipient_transfer":
-            st.markdown("""<div style="background:rgba(74,222,128,.06);border:1px solid rgba(74,222,128,.2);
-            border-radius:7px;padding:8px 12px;font-size:11px;color:#4ade80;margin-bottom:8px">
-            📲 ลูกค้าโอนค่าจัดส่งให้ร้านก่อน — PromptPay: <strong>062-737-7700</strong>
-            </div>""", unsafe_allow_html=True)
-
-        # ── From cart: full checkout flow ────────────────────────
         if from_cart:
             STORE_PP_PHONE = "0627377700"
             STORE_BANK     = "กสิกรไทย (KBank)"
             STORE_ACCOUNT  = "129-1-89092-6"
             STORE_NAME     = "นายปัญญธร ชัยพิศุทธิ์"
-
-            st.markdown('<div class="co-section">', unsafe_allow_html=True)
-            st.markdown('<div class="co-section-title">ข้อมูลผู้รับ</div>', unsafe_allow_html=True)
-            cust_name  = st.text_input("ชื่อ-นามสกุล / ชื่ออู่ *",
-                value=st.session_state.cust_name, key="del_name",
-                placeholder="เช่น อู่ซ่อมรถ ลาดพร้าว")
-            cust_phone = st.text_input("เบอร์โทร *",
-                value=st.session_state.cust_phone, key="del_phone",
-                placeholder="0XX-XXX-XXXX")
-            st.markdown('</div>', unsafe_allow_html=True)
 
             cart_amt = cart_total()
             try:    delivery_fee_num = float(st.session_state.checkout_quote_price)
@@ -1734,15 +1744,18 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
             total_amt = cart_amt + delivery_fee_num
 
             if lala_pay_key == "recipient_transfer":
-                st.markdown(f"""<div style="background:rgba(201,168,76,.08);border:1px solid rgba(201,168,76,.3);
-                border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:12px;color:#C9A84C">
-                ⚠️ <strong>ค่าจัดส่ง ฿{delivery_fee_num:,.0f}</strong> — กรุณาโอนค่าส่งก่อนจัดส่ง<br>
-                <span>PromptPay: <strong>062-737-7700</strong></span></div>""", unsafe_allow_html=True)
+                st.markdown(
+                    f'<div style="background:rgba(201,168,76,.08);border:1px solid rgba(201,168,76,.3);'
+                    f'border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:12px;color:#C9A84C">'
+                    f'⚠️ <strong>ค่าจัดส่ง ฿{delivery_fee_num:,.0f}</strong> — กรุณาโอนค่าส่งก่อนจัดส่ง<br>'
+                    f'PromptPay: <strong>062-737-7700</strong></div>', unsafe_allow_html=True)
             elif lala_pay_key == "recipient_cash":
-                st.markdown("""<div style="background:rgba(74,222,128,.06);border:1px solid rgba(74,222,128,.2);
-                border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:12px;color:#4ade80">
-                ✅ Driver เก็บค่าจัดส่งเป็นเงินสดที่ปลายทาง (POD)</div>""", unsafe_allow_html=True)
+                st.markdown(
+                    '<div style="background:rgba(74,222,128,.06);border:1px solid rgba(74,222,128,.2);'
+                    'border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:12px;color:#4ade80">'
+                    '✅ Driver เก็บค่าจัดส่งเป็นเงินสดที่ปลายทาง (POD)</div>', unsafe_allow_html=True)
 
+            # สรุปออเดอร์
             st.markdown('<div class="sum-card">', unsafe_allow_html=True)
             st.markdown('<div class="co-section-title">สรุปออเดอร์</div>', unsafe_allow_html=True)
             for _, item in st.session_state.cart.items():
@@ -1750,15 +1763,16 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                     f'<div class="sum-row"><span>{item["name"][:28]} ×{item["qty"]}</span>'
                     f'<span>฿{item["price"]*item["qty"]:,.0f}</span></div>',
                     unsafe_allow_html=True)
-            pnote = "จริง ✓" if st.session_state.checkout_quote_id else "ประมาณ"
+            pnote2 = "ราคาประมาณ" if is_estimate else "จริง ✓"
             st.markdown(
-                f'<div class="sum-row"><span>ค่าจัดส่ง {VEHICLES[veh_sel]["label"]} ({pnote})</span>'
+                f'<div class="sum-row"><span>ค่าจัดส่ง {VEHICLES[st.session_state.checkout_vehicle]["label"]} ({pnote2})</span>'
                 f'<span>฿{delivery_fee_num:,.0f}</span></div>', unsafe_allow_html=True)
             st.markdown(
                 f'<div class="sum-row"><span>ยอดรวมทั้งหมด</span>'
                 f'<span>฿{total_amt:,.0f}</span></div>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
 
+            # วิธีชำระเงินค่าสินค้า
             st.markdown('<div class="co-section">', unsafe_allow_html=True)
             st.markdown('<div class="co-section-title">ชำระเงินค่าสินค้า</div>', unsafe_allow_html=True)
             pay_opts   = ["📱 PromptPay / QR Code", "🏦 โอนเงินเข้าบัญชีธนาคาร"]
@@ -1766,8 +1780,8 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
 
             if "PromptPay" in pay_choice:
                 st.session_state.payment_method = "promptpay"
-                script_dir  = os.path.dirname(os.path.abspath(__file__))
-                kbank_path  = next(
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                kbank_path = next(
                     (os.path.join(script_dir, f) for f in ("kbank_qr.png","kbank_qr.jpg","kbank_qr.jpeg")
                      if os.path.exists(os.path.join(script_dir, f))), "")
                 if kbank_path:
@@ -1817,14 +1831,15 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
 
             can_confirm = bool(cust_name and cust_phone and dest_lat)
             if not can_confirm:
-                missing = [x for x,v in [("ชื่อ",cust_name),("เบอร์โทร",cust_phone),("ที่อยู่",dest_lat)] if not v]
-                st.caption(f"⚠️ กรุณากรอก: {', '.join(missing)}")
+                miss2 = [x for x,v in [("ชื่อ",cust_name),("เบอร์โทร",cust_phone),("ที่อยู่",dest_lat)] if not v]
+                st.caption(f"⚠️ กรุณากรอก: {', '.join(miss2)}")
 
             if st.button("🎉 ยืนยันคำสั่งซื้อ", use_container_width=True, type="primary",
                          key="del_confirm", disabled=not can_confirm):
                 order_id = gen_order_id(); lala_order_id = ""; share_link = ""
                 is_pod   = lala_pay_key == "recipient_cash"
-                if st.session_state.checkout_quote_id and keys_ok:
+                real_quote = st.session_state.checkout_quote_id not in (None, "estimate")
+                if real_quote and keys_ok:
                     with st.spinner("กำลังสร้าง Lalamove order..."):
                         lo = create_lala_order(
                             st.session_state.checkout_quote_id,
@@ -1835,24 +1850,28 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                     else:
                         st.warning(f"⚠️ Lalamove: {lo['error']}")
                 try_save_order({
-                    "OrderID":order_id,"DateTime":datetime.now().isoformat(),
-                    "CustomerName":cust_name,"CustomerPhone":cust_phone,
-                    "Items":json.dumps({k:v for k,v in st.session_state.cart.items()},ensure_ascii=False),
-                    "CartTotal":cart_amt,"DeliveryMethod":"lalamove","DeliveryAddr":dest_addr,
-                    "Vehicle":veh_sel,"DeliveryFee":delivery_fee_num,
-                    "PaymentMethod":st.session_state.payment_method,
-                    "TotalAmount":total_amt,"LalamoveID":lala_order_id,"Status":"pending",
+                    "OrderID": order_id, "DateTime": datetime.now().isoformat(),
+                    "CustomerName": cust_name, "CustomerPhone": cust_phone,
+                    "Items": json.dumps({ck:cv for ck,cv in st.session_state.cart.items()},
+                                        ensure_ascii=False),
+                    "CartTotal": cart_amt, "DeliveryMethod": "lalamove",
+                    "DeliveryAddr": dest_addr, "Vehicle": veh_sel,
+                    "DeliveryFee": delivery_fee_num,
+                    "PaymentMethod": st.session_state.payment_method,
+                    "TotalAmount": total_amt, "LalamoveID": lala_order_id, "Status": "pending",
                 })
-                st.session_state.cust_name = cust_name; st.session_state.cust_phone = cust_phone
-                st.session_state.order_id = order_id; st.session_state.order_lala_id = lala_order_id
-                st.session_state.order_share_link = share_link; st.session_state.cart = {}
+                st.session_state.cust_name        = cust_name
+                st.session_state.cust_phone       = cust_phone
+                st.session_state.order_id         = order_id
+                st.session_state.order_lala_id    = lala_order_id
+                st.session_state.order_share_link = share_link
+                st.session_state.cart             = {}
                 go('confirmed')
 
         else:
-            # ── Standalone: order form after quotation ──────────
-            if st.session_state.checkout_quote_id:
+            # Standalone (ไม่มีตะกร้า) — ส่ง order ไป Lalamove ตรงๆ
+            if st.session_state.checkout_quote_id not in (None, "estimate"):
                 st.markdown("---")
-                st.markdown("**ส่ง Order ไป Lalamove**")
                 r1, r2 = st.columns(2)
                 rn = r1.text_input("ชื่ออู่ / ผู้รับ", key="del_rn")
                 rp = r2.text_input("เบอร์โทร (+66...)", key="del_rp")
@@ -1866,8 +1885,10 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                             st.success(f"🎉 Order สำเร็จ! ID: {lo['order_id']}")
                             if lo["share_link"]: st.link_button("📍 ติดตาม Driver", lo["share_link"])
                             st.session_state.checkout_quote_id = None
-                        else: st.error(f"❌ {lo['error']}")
-                    else: st.error("กรุณากรอกชื่อและเบอร์โทร")
+                        else:
+                            st.error(f"❌ {lo['error']}")
+                    else:
+                        st.error("กรุณากรอกชื่อและเบอร์โทร")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
