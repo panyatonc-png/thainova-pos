@@ -1269,7 +1269,8 @@ def page_delivery():
             st.session_state.checkout_lat      = float(_qp["_dlat"])
             st.session_state.checkout_lng      = float(_qp["_dlng"])
             st.session_state.checkout_addr     = _qp.get("_daddr", "")
-            st.session_state.checkout_quote_id = None
+            st.session_state.checkout_quote_id    = None
+            st.session_state.show_map_delivery = False   # ซ่อนแผนที่, แสดงกล่องที่อยู่
         except (ValueError, KeyError):
             pass
         st.query_params.clear()
@@ -1582,9 +1583,39 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
         )
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Big delivery iframe (แผนที่ + vehicle display) ──────────
-    if not dest_lat:
-       components.html(html, height=420, scrolling=False)
+    # ── Big delivery iframe / กล่องที่อยู่ ──────────────────────
+    _show_map = st.session_state.get("show_map_delivery", False)
+
+    if dest_lat and not _show_map:
+        # ✅ มีพิกัดแล้ว — แสดงกล่องที่อยู่ + ปุ่มเปลี่ยน/รีเซ็ต
+        st.markdown(
+            f'<div style="background:rgba(74,222,128,.06);border:1px solid rgba(74,222,128,.25);'
+            f'border-radius:10px;padding:12px 16px;margin-bottom:8px">'
+            f'<div style="font-size:11px;color:#4ade80;font-weight:700;margin-bottom:4px">'
+            f'📍 ที่อยู่ที่เลือกแล้ว</div>'
+            f'<div style="font-size:13px;font-weight:600;line-height:1.4">{dest_addr}</div>'
+            f'<div style="font-size:10px;color:var(--muted);font-family:monospace;margin-top:4px">'
+            f'{dest_lat:.5f}, {dest_lng:.5f}</div>'
+            f'</div>', unsafe_allow_html=True)
+        _mc1, _mc2 = st.columns(2)
+        with _mc1:
+            if st.button("🗺️ เปลี่ยนตำแหน่ง", key="del_show_map", use_container_width=True):
+                st.session_state.show_map_delivery = True
+                st.rerun()
+        with _mc2:
+            if st.button("🔄 รีเซ็ตที่อยู่", key="del_reset_addr", use_container_width=True):
+                st.session_state.checkout_lat         = None
+                st.session_state.checkout_lng         = None
+                st.session_state.checkout_addr        = ""
+                st.session_state.checkout_quote_id    = None
+                st.session_state.checkout_quote_price = None
+                st.session_state.checkout_quote_dist  = None
+                st.session_state.show_map_delivery    = False
+                st.rerun()
+    else:
+        # 🗺️ ยังไม่มีพิกัด หรือกด "เปลี่ยนตำแหน่ง" — แสดงแผนที่
+        components.html(html, height=420, scrolling=False)
+
     st.divider()
 
     # ══════════════════════════════════════════════════════════════
