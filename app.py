@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
+import re
 import requests, hmac, hashlib, time, json, io, base64, os
 
 try:
@@ -386,6 +387,18 @@ def get_quotation(dlat, dlng, service, lkey, lsecret):
         return {"ok":False,"error":d}
     except Exception as e:
         return {"ok":False,"error":str(e)}
+
+_PHONE_RE = re.compile(r"^\+\d{9,15}$")
+
+def _normalize_phone(p: str) -> str:
+    """แปลงเบอร์โทรไทย → international format สำหรับ Lalamove API
+    0812345678   → +66812345678
+    +66812345678 → +66812345678  (ใช้ได้เลย)
+    """
+    p = p.strip().replace("-", "").replace(" ", "")
+    if p.startswith("0"):
+        p = "+66" + p[1:]
+    return p
 
 def create_lala_order(quote_id, stop_sender, stop_recipient, cname, cphone, lkey, lsecret, is_pod=False):
     """สร้าง Lalamove order ด้วย quotationId และ stopId จริงจาก get_quotation()
@@ -1267,10 +1280,17 @@ function selectV(k,el){
   el.classList.add('sel');
   const n=document.getElementById('vn-'+k);n.classList.add('sel');n.textContent+='  ✓';
   document.getElementById('sum-v').textContent=VN[k];
-  document.getElementById('sum-price').textContent='฿'+VP[k];
-  document.getElementById('sum-price').style.color='var(--gd)';
-  document.getElementById('pnote').textContent='(ประมาณ)';
-  document.getElementById('pnote').style.color='var(--gd)';
+  document.getElementById('sum-price').textContent='คำนวณตามระยะทางจริง';
+  document.getElementById('sum-price').style.color='var(--mu)';
+  document.getElementById('sum-price').style.fontSize='11px';
+  document.getElementById('pnote').textContent='';
+  // ส่ง vehicle ที่เลือกไป Python ผ่าน query params
+  try{
+    var p=new URLSearchParams(window.parent.location.search);
+    p.set('_veh',k);
+    window.parent.history.replaceState(null,'',window.parent.location.pathname+'?'+p.toString());
+    window.parent.dispatchEvent(new PopStateEvent('popstate',{bubbles:true}));
+  }catch(e){}
 }
 function selectSched(s){
   document.getElementById('sched-now').classList.toggle('sel',s==='now');
@@ -1282,7 +1302,7 @@ def page_delivery():
     lk, ls, mk, pp_phone, keys_ok = get_secrets()
     import streamlit.components.v1 as components
 
-    # ── รับพิกัด+ที่อยู่จากแผนที่ผ่าน query params ──────────────────
+    # ── รับค่าจาก iframe ผ่าน query params ──────────────────────────
     _qp = st.query_params
     if "_dlat" in _qp and "_dlng" in _qp:
         try:
@@ -1293,6 +1313,13 @@ def page_delivery():
             st.session_state.show_map_delivery = False   # ซ่อนแผนที่, แสดงกล่องที่อยู่
         except (ValueError, KeyError):
             pass
+        st.query_params.clear()
+        st.rerun()
+    elif "_veh" in _qp:
+        _veh_val = _qp["_veh"]
+        if _veh_val in ("MOTORCYCLE", "CAR", "VAN"):
+            st.session_state.checkout_vehicle  = _veh_val
+            st.session_state.checkout_quote_id = None   # ต้องคำนวณใหม่เมื่อเปลี่ยน vehicle
         st.query_params.clear()
         st.rerun()
 
@@ -1310,10 +1337,9 @@ def page_delivery():
     is_confirmed = dest_lat is not None
     has_quote    = bool(q_id) and st.session_state.checkout_vehicle == sel_v
 
-    price_map   = {"MOTORCYCLE":"79","CAR":"149","VAN":"249"}
-    disp_price  = q_price if has_quote else price_map.get(sel_v, "79")
-    price_color = "#4ade80" if has_quote else "#C9A84C"
-    price_note  = "ราคาจริง ✓" if has_quote else "ประมาณ"
+    disp_price  = q_price if has_quote else "คำนวณตามระยะทางจริง"
+    price_color = "#4ade80" if has_quote else "#888"
+    price_note  = "ราคาจริง ✓" if has_quote else ""
 
     addr_esc   = dest_addr.replace('"','').replace('\n',' ')
     addr_short = addr_esc[:50]+"..." if len(addr_esc)>50 else addr_esc
@@ -1333,14 +1359,15 @@ def page_delivery():
         if n==1: return "✓"
         if n==2: return "✓" if is_confirmed else "2"
         return str(n)
-    def vrow(key, icon, name, detail, price, eta):
+    def vrow(key, icon, name, detail, eta):
         sel_cls = "sel" if sel_v==key else ""
         chk = "  ✓" if sel_v==key else ""
         return (f'<div class="v-card {sel_cls}" onclick="selectV(\'{key}\',this)" id="v-{key}">'
                 f'<div class="v-icon">{icon}</div>'
                 f'<div><div class="v-name {"sel" if sel_v==key else ""}" id="vn-{key}">{name}{chk}</div>'
                 f'<div class="v-detail">{detail}</div></div>'
-                f'<div><div class="v-price">฿{price}</div><div class="v-eta">{eta}</div></div></div>')
+                f'<div><div class="v-price" style="font-size:10px;color:var(--mu);font-weight:400">'
+                f'คำนวณตามระยะทางจริง</div><div class="v-eta">{eta}</div></div></div>')
     def sbtn(key, icon, label):
         sel_sched = st.session_state.get("sel_sched","now")
         cls = "sel" if sel_sched==key else ""
@@ -1551,9 +1578,9 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
 </div>
 <div class="slbl">เลือกยานพาหนะ</div>
 <div class="vgrid">
-  {vrow("MOTORCYCLE","🛵","Motorbike","≤ 20 kg · สีขนาดเล็ก","79","30-45 นาที")}
-  {vrow("CAR","🚗","Sedan / Eco Car","≤ 50 kg · หลายกระป๋อง","149","45-60 นาที")}
-  {vrow("VAN","🚐","Van / Truck","≤ 500 kg · ล็อตใหญ่","249","60-90 นาที")}
+  {vrow("MOTORCYCLE","🛵","Motorbike","≤ 20 kg · สีขนาดเล็ก","30-45 นาที")}
+  {vrow("CAR","🚗","Sedan / Eco Car","≤ 50 kg · หลายกระป๋อง","45-60 นาที")}
+  {vrow("VAN","🚐","Van / Truck","≤ 500 kg · ล็อตใหญ่","60-90 นาที")}
 </div>
 <div class="slbl">เวลาจัดส่ง</div>
 <div class="sgrid">
@@ -1660,15 +1687,9 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
             f'{dest_lat:.5f}, {dest_lng:.5f}</span></div>',
             unsafe_allow_html=True)
 
-    # ── ขั้นตอนที่ 2: เลือกยานพาหนะ ────────────────────────────
-    st.markdown(
-        '<div style="font-size:11px;color:var(--muted);letter-spacing:.5px;'
-        'text-transform:uppercase;margin:14px 0 6px">🚗 เลือกยานพาหนะ</div>',
-        unsafe_allow_html=True)
-    veh_sel = st.selectbox("", list(VEHICLES.keys()),
-        format_func=lambda k: f"{VEHICLES[k]['label']}  ·  ฿{VEHICLES[k]['price']}  ·  {VEHICLES[k]['eta']}",
-        index=list(VEHICLES.keys()).index(st.session_state.checkout_vehicle),
-        key="del_veh_sel", label_visibility="collapsed")
+    # ── ยานพาหนะที่เลือก — source of truth คือ card ใน iframe ด้านบน ──
+    # sel_v = st.session_state.checkout_vehicle (set จาก selectV() ใน iframe)
+    veh_sel = sel_v
 
     # ── ขั้นตอนที่ 3: ผู้ชำระค่าจัดส่ง ─────────────────────────
     st.markdown(
@@ -1914,6 +1935,12 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
 
             if st.button("🎉 ยืนยันคำสั่งซื้อ", use_container_width=True, type="primary",
                          key="del_confirm", disabled=not can_confirm):
+                # ── normalize + validate phone ──────────────────────
+                _phone = _normalize_phone(cust_phone)
+                if not _PHONE_RE.match(_phone):
+                    st.error(f"❌ เบอร์โทรไม่ถูกต้อง: '{cust_phone}' — กรุณากรอกเช่น 0812345678 หรือ +66812345678")
+                    st.stop()
+
                 order_id = gen_order_id(); lala_order_id = ""; share_link = ""
                 is_pod   = lala_pay_key == "recipient_cash"
                 real_quote = st.session_state.checkout_quote_id not in (None, "estimate")
@@ -1923,7 +1950,7 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                             st.session_state.checkout_quote_id,
                             st.session_state.get("checkout_stop_sender",    "1"),
                             st.session_state.get("checkout_stop_recipient", "2"),
-                            cust_name, cust_phone, lk, ls, is_pod=is_pod)
+                            cust_name, _phone, lk, ls, is_pod=is_pod)
                     if lo.get("debug"):
                         with st.expander("🔍 Lalamove Debug Response", expanded=not lo["ok"]):
                             st.json(lo["debug"])
@@ -1934,7 +1961,7 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                         st.stop()
                 try_save_order({
                     "OrderID": order_id, "DateTime": datetime.now().isoformat(),
-                    "CustomerName": cust_name, "CustomerPhone": cust_phone,
+                    "CustomerName": cust_name, "CustomerPhone": _phone,
                     "Items": json.dumps({ck:cv for ck,cv in st.session_state.cart.items()},
                                         ensure_ascii=False),
                     "CartTotal": cart_amt, "DeliveryMethod": "lalamove",
@@ -1960,12 +1987,16 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                 rp = r2.text_input("เบอร์โทร (+66...)", key="del_rp")
                 if st.button("✅ ส่ง Order ไป Lalamove", use_container_width=True, key="del_co"):
                     if rn and rp and keys_ok:
+                        _rp = _normalize_phone(rp)
+                        if not _PHONE_RE.match(_rp):
+                            st.error(f"❌ เบอร์โทรไม่ถูกต้อง: '{rp}' — กรุณากรอกเช่น 0812345678 หรือ +66812345678")
+                            st.stop()
                         with st.spinner("กำลังสร้าง Order..."):
                             lo = create_lala_order(
                                 st.session_state.checkout_quote_id,
                                 st.session_state.get("checkout_stop_sender",    "1"),
                                 st.session_state.get("checkout_stop_recipient", "2"),
-                                rn, rp, lk, ls)
+                                rn, _rp, lk, ls)
                         if lo.get("debug"):
                             with st.expander("🔍 Lalamove Debug Response", expanded=not lo["ok"]):
                                 st.json(lo["debug"])
