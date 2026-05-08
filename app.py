@@ -2093,6 +2093,117 @@ def page_contact():
 
 
 # ══════════════════════════════════════════════════════════════
+# ADMIN — Orders Report
+# ══════════════════════════════════════════════════════════════
+def page_admin_orders():
+    """รายงานออเดอร์ลูกค้า — ดึงจาก Google Sheet worksheet 'Orders'"""
+    ALL_COLS = ['OrderID','DateTime','CustomerName','CustomerPhone','Items',
+                'CartTotal','DeliveryMethod','DeliveryAddr','Vehicle',
+                'DeliveryFee','PaymentMethod','TotalAmount','LalamoveID','Status']
+
+    # ── โหลด Orders sheet ──────────────────────────────────────
+    try:
+        raw = conn.read(worksheet="Orders")
+    except Exception as e:
+        st.info("💡 ยังไม่มีข้อมูลออเดอร์ หรือยังไม่ได้สร้าง worksheet **Orders** ใน Google Sheets")
+        st.caption(f"Detail: {e}")
+        return
+
+    if raw is None or raw.empty:
+        st.info("📭 ยังไม่มีออเดอร์ลูกค้า")
+        return
+
+    # เติม column ที่ขาดเป็นค่าว่าง — ป้องกัน crash
+    for col in ALL_COLS:
+        if col not in raw.columns:
+            raw[col] = ""
+
+    df = raw[ALL_COLS].copy()
+
+    # ── แปลง Items JSON → ข้อความอ่านง่าย ─────────────────────
+    def _fmt_items(val):
+        try:
+            d = json.loads(str(val))
+            parts = [f"{v.get('name','?')[:20]} ×{v.get('qty',1)}" for v in d.values()]
+            return ", ".join(parts)
+        except Exception:
+            return str(val) if val else ""
+
+    df["Items"] = df["Items"].apply(_fmt_items)
+
+    # ── แปลง numeric ──────────────────────────────────────────
+    for _nc in ["CartTotal","DeliveryFee","TotalAmount"]:
+        df[_nc] = pd.to_numeric(df[_nc], errors="coerce").fillna(0)
+
+    # ── sort DateTime ใหม่สุดบน ───────────────────────────────
+    df["DateTime"] = pd.to_datetime(df["DateTime"], errors="coerce")
+    df = df.sort_values("DateTime", ascending=False).reset_index(drop=True)
+
+    # ── Metrics ───────────────────────────────────────────────
+    total_orders   = len(df)
+    total_revenue  = df["TotalAmount"].sum()
+    total_delivery = df["DeliveryFee"].sum()
+    pending_count  = int((df["Status"].astype(str).str.lower() == "pending").sum())
+
+    mc1,mc2,mc3,mc4 = st.columns(4)
+    mc1.metric("📦 ออเดอร์ทั้งหมด", f"{total_orders:,}")
+    mc2.metric("💰 ยอดขายรวม",       f"฿{total_revenue:,.0f}")
+    mc3.metric("🚚 ค่าส่งรวม",       f"฿{total_delivery:,.0f}")
+    mc4.metric("⏳ Pending",          f"{pending_count:,}")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Filters ───────────────────────────────────────────────
+    fa,fb,fc,fd_col,fe = st.columns([3,1,1,1,1])
+    with fa:
+        kw = st.text_input("🔍 ค้นหา OrderID / ชื่อ / เบอร์:",
+                           key="ao_kw", placeholder="เช่น TN250601 หรือ 0812345678",
+                           label_visibility="collapsed")
+    with fb:
+        status_opts = ["ทั้งหมด"] + sorted(df["Status"].dropna().astype(str).unique().tolist())
+        f_status    = st.selectbox("Status", status_opts, key="ao_status")
+    with fc:
+        pay_opts    = ["ทั้งหมด"] + sorted(df["PaymentMethod"].dropna().astype(str).unique().tolist())
+        f_pay       = st.selectbox("ชำระ", pay_opts, key="ao_pay")
+    with fd_col:
+        dm_opts     = ["ทั้งหมด"] + sorted(df["DeliveryMethod"].dropna().astype(str).unique().tolist())
+        f_dm        = st.selectbox("จัดส่ง", dm_opts, key="ao_dm")
+    with fe:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🔄 Refresh", key="ao_refresh", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    # ── Apply filters ──────────────────────────────────────────
+    filtered = df.copy()
+    if kw:
+        mask = (
+            filtered["OrderID"].astype(str).str.contains(kw, case=False, na=False) |
+            filtered["CustomerName"].astype(str).str.contains(kw, case=False, na=False) |
+            filtered["CustomerPhone"].astype(str).str.contains(kw, case=False, na=False)
+        )
+        filtered = filtered[mask]
+    if f_status != "ทั้งหมด":
+        filtered = filtered[filtered["Status"].astype(str) == f_status]
+    if f_pay != "ทั้งหมด":
+        filtered = filtered[filtered["PaymentMethod"].astype(str) == f_pay]
+    if f_dm != "ทั้งหมด":
+        filtered = filtered[filtered["DeliveryMethod"].astype(str) == f_dm]
+
+    st.caption(f"แสดง {len(filtered):,} จาก {total_orders:,} ออเดอร์")
+
+    # ── Table ──────────────────────────────────────────────────
+    if filtered.empty:
+        st.info("ไม่พบออเดอร์ที่ตรงกับเงื่อนไข")
+    else:
+        show_cols = ['OrderID','DateTime','CustomerName','CustomerPhone',
+                     'Items','CartTotal','DeliveryMethod','Vehicle',
+                     'DeliveryFee','TotalAmount','PaymentMethod','LalamoveID','Status']
+        show_cols = [c for c in show_cols if c in filtered.columns]
+        st.dataframe(filtered[show_cols], use_container_width=True, hide_index=True)
+
+
+# ══════════════════════════════════════════════════════════════
 # ADMIN
 # ══════════════════════════════════════════════════════════════
 def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
@@ -2193,20 +2304,8 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
                              use_container_width=True, hide_index=True)
 
     with atabs[5]:
-        st.markdown('<div class="co-section-title">ออเดอร์จากลูกค้าออนไลน์</div>', unsafe_allow_html=True)
-        try:
-            orders_df = conn.read(worksheet="Orders")
-            if not orders_df.empty:
-                display_cols = [c for c in ['OrderID','DateTime','CustomerName','CustomerPhone',
-                                             'TotalAmount','DeliveryMethod','Status'] if c in orders_df.columns]
-                st.dataframe(orders_df[display_cols].sort_values('DateTime', ascending=False) if 'DateTime' in orders_df.columns else orders_df[display_cols],
-                             use_container_width=True, hide_index=True)
-            else:
-                st.info("ยังไม่มีออเดอร์")
-        except:
-            st.info("💡 สร้างแท็บ **Orders** ใน Google Sheets เพื่อบันทึกออเดอร์อัตโนมัติ\n\n"
-                    "คอลัมน์: OrderID, DateTime, CustomerName, CustomerPhone, Items, CartTotal, "
-                    "DeliveryMethod, DeliveryAddr, Vehicle, DeliveryFee, PaymentMethod, TotalAmount, LalamoveID, Status")
+        st.markdown('<div class="co-section-title">📋 รายงานออเดอร์ลูกค้า</div>', unsafe_allow_html=True)
+        page_admin_orders()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
