@@ -1209,7 +1209,7 @@ def page_confirmed():
 
 
 def _shared_js():
-    """Shared vehicle/schedule/confirm JS used by both Google Maps and Leaflet delivery iframe."""
+    """Shared JS — setConfirmed ส่งพิกัดขึ้น Streamlit ผ่าน URL query params."""
     return """
 function setConfirmed(addr,lat,lng){
   confirmed=true;
@@ -1221,8 +1221,15 @@ function setConfirmed(addr,lat,lng){
   document.getElementById('sum-dest').textContent=sh;
   const btn=document.getElementById('calc-btn');
   btn.disabled=false;btn.style.background='#E8192C';btn.style.color='#fff';
-  window.parent.postMessage({type:'setDest',lat:lat,lng:lng,addr:addr},'*');
-  toast('✅ ปักหมุดแล้ว!');
+  // ส่งพิกัดขึ้น Streamlit ผ่าน parent URL (วิธีเดียวที่ทำงานได้กับ iframe sandboxed)
+  try{
+    const u=new URL(window.parent.location.href);
+    u.searchParams.set('dlat', typeof lat.toFixed==='function'?lat.toFixed(6):lat);
+    u.searchParams.set('dlng', typeof lng.toFixed==='function'?lng.toFixed(6):lng);
+    u.searchParams.set('daddr', addr);
+    window.parent.history.replaceState(null,'',u.toString());
+  }catch(e){}
+  toast('✅ ปักหมุดแล้ว! กดปุ่ม คำนวณราคา ด้านล่าง');
 }
 function changeAddr(){
   confirmed=false;
@@ -1230,7 +1237,11 @@ function changeAddr(){
   document.getElementById('con-card').style.display='none';
   const btn=document.getElementById('calc-btn');
   btn.disabled=true;btn.style.background='#2a2a2a';btn.style.color='#888';
-  window.parent.postMessage({type:'clearDest'},'*');
+  try{
+    const u=new URL(window.parent.location.href);
+    u.searchParams.delete('dlat');u.searchParams.delete('dlng');u.searchParams.delete('daddr');
+    window.parent.history.replaceState(null,'',u.toString());
+  }catch(e){}
 }
 function selectV(k,el){
   ['MOTORCYCLE','CAR','VAN'].forEach(v=>{
@@ -1255,7 +1266,14 @@ function sendCalc(){
   if(!confirmed){toast('กรุณาปักหมุดก่อน');return;}
   document.getElementById('calc-btn').textContent='⏳ กำลังคำนวณ...';
   document.getElementById('calc-btn').disabled=true;
-  window.parent.postMessage({type:'calcPrice',lat:curLat,lng:curLng},'*');
+  // navigate parent เพื่อ trigger Streamlit rerun พร้อม do_calc flag
+  try{
+    const u=new URL(window.parent.location.href);
+    u.searchParams.set('dlat', typeof curLat.toFixed==='function'?curLat.toFixed(6):curLat);
+    u.searchParams.set('dlng', typeof curLng.toFixed==='function'?curLng.toFixed(6):curLng);
+    u.searchParams.set('do_calc','1');
+    window.parent.location.href=u.toString();
+  }catch(e){toast('กดปุ่มคำนวณราคาด้านล่างได้เลย');}
 }"""
 
 
@@ -1579,47 +1597,74 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
     components.html(html, height=980, scrolling=True)
     st.divider()
 
-    # ── Streamlit controls (always visible) ─────────────────────
-    st.markdown("""<div style="background:rgba(232,25,44,.06);border:1px solid rgba(232,25,44,.2);
-    border-radius:10px;padding:12px 16px;margin-bottom:12px;font-size:12px">
-    📍 <strong>ขั้นตอนที่ 1:</strong> ค้นหา/ปักหมุดบนแผนที่ด้านบน กด "ยืนยันตำแหน่ง"
-    แล้วกรอกที่อยู่ในช่องด้านล่าง → กด <strong>"ยืนยันที่อยู่"</strong>
-    จากนั้นเลือกยานพาหนะ → กด <strong>"คำนวณราคา"</strong>
-    </div>""", unsafe_allow_html=True)
-
-    ca, cb = st.columns([3,1])
-    with ca:
-        addr_txt = st.text_input("📍 พิมพ์ที่อยู่ปลายทาง:",
-            value=st.session_state.checkout_addr or "",
-            key="del_addr",
-            placeholder="เช่น อู่ซ่อมรถ ลาดพร้าว กรุงเทพฯ หรือวางที่อยู่จากแผนที่")
-    with cb:
-        veh_sel = st.selectbox("ยานพาหนะ:",
-            list(VEHICLES.keys()),
-            format_func=lambda k: VEHICLES[k]['label'],
-            index=list(VEHICLES.keys()).index(st.session_state.checkout_vehicle),
-            key="del_veh_sel")
-
-    col_geocode, col_calc = st.columns(2)
-    with col_geocode:
-        if st.button("🔍 ยืนยันที่อยู่", use_container_width=True, key="del_geocode",
-                     disabled=not addr_txt):
-            with st.spinner("กำลังค้นหา..."):
-                lat, lng, fmt = geocode(addr_txt, mk)
-            if lat:
-                st.session_state.checkout_lat      = lat
-                st.session_state.checkout_lng      = lng
-                st.session_state.checkout_addr     = fmt
-                st.session_state.checkout_vehicle  = veh_sel
+    # ── รับพิกัดจาก iframe ผ่าน URL query_params ────────────────
+    qp = st.query_params
+    if qp.get("dlat") and qp.get("dlng"):
+        try:
+            p_lat  = float(qp["dlat"])
+            p_lng  = float(qp["dlng"])
+            p_addr = qp.get("daddr", f"{p_lat:.5f},{p_lng:.5f}")
+            changed = st.session_state.checkout_lat != p_lat
+            if changed:
+                st.session_state.checkout_lat      = p_lat
+                st.session_state.checkout_lng      = p_lng
+                st.session_state.checkout_addr     = p_addr
                 st.session_state.checkout_quote_id = None
+            # ถ้ากด calc-btn จาก iframe → คำนวณทันทีเลย
+            if qp.get("do_calc") == "1":
+                st.query_params.clear()
+                if keys_ok:
+                    with st.spinner("💰 กำลังคำนวณ Lalamove..."):
+                        q = get_quotation(p_lat, p_lng,
+                                          st.session_state.checkout_vehicle, lk, ls)
+                    if q["ok"]:
+                        st.session_state.checkout_quote_id    = q["quotation_id"]
+                        st.session_state.checkout_quote_price = q["price"]
+                        st.session_state.checkout_quote_dist  = q["distance"]
                 st.rerun()
-            else:
-                st.error("❌ ไม่พบที่อยู่ ลองพิมพ์ให้ละเอียดขึ้น")
+            elif changed:
+                st.rerun()   # rerun เพื่อให้ปุ่มคำนวณ active
+        except Exception:
+            pass
 
-    with col_calc:
-        if st.button("💰 คำนวณราคา Lalamove", use_container_width=True, type="primary",
-                     key="del_calc", disabled=not (dest_lat and keys_ok)):
-            with st.spinner("กำลังคำนวณ..."):
+    # refresh local vars หลัง rerun
+    dest_lat  = st.session_state.checkout_lat
+    dest_lng  = st.session_state.checkout_lng
+    dest_addr = st.session_state.checkout_addr or ""
+    is_confirmed = dest_lat is not None
+    addr_short = dest_addr[:50]+"..." if len(dest_addr)>50 else dest_addr
+
+    veh_sel = st.session_state.checkout_vehicle
+
+    # ── แสดงสถานะที่อยู่ + ปุ่มคำนวณ ────────────────────────────
+    if is_confirmed:
+        st.markdown(f"""
+        <div style="background:rgba(74,222,128,.06);border:1px solid rgba(74,222,128,.25);
+             border-radius:8px;padding:10px 14px;font-size:12px;margin-bottom:10px;
+             display:flex;align-items:center;gap:8px">
+          <span style="font-size:16px">✅</span>
+          <div>
+            <div style="font-weight:600;color:#f0f0f0">{addr_short}</div>
+            <div style="font-size:10px;color:#4ade80;font-family:monospace;margin-top:2px">
+              {dest_lat:.5f}, {dest_lng:.5f}
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style="background:rgba(232,25,44,.06);border:1px solid rgba(232,25,44,.25);
+             border-radius:8px;padding:10px 14px;font-size:12px;color:#E8192C;margin-bottom:10px">
+          💡 <strong>ลากแผนที่</strong>ด้านบนไปยังตำแหน่งที่ต้องการ → กด
+          <strong>ยืนยันตำแหน่งนี้</strong> → กดปุ่มคำนวณด้านล่าง
+        </div>
+        """, unsafe_allow_html=True)
+
+    if st.button("💰 คำนวณราคาจัดส่ง", use_container_width=True,
+                 type="primary", key="del_calc",
+                 disabled=not is_confirmed):
+        if keys_ok:
+            with st.spinner("💰 กำลังคำนวณราคา Lalamove..."):
                 q = get_quotation(dest_lat, dest_lng, veh_sel, lk, ls)
             if q["ok"]:
                 st.session_state.checkout_quote_id    = q["quotation_id"]
@@ -1628,17 +1673,9 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                 st.session_state.checkout_vehicle     = veh_sel
                 st.rerun()
             else:
-                st.error(f"❌ {q['error']}")
-
-    if not keys_ok:
-        st.info("⚠️ ตั้งค่า Lalamove API key ใน secrets.toml เพื่อคำนวณราคาจริง")
-
-    if dest_lat:
-        st.markdown(f"""<div class="addr-box">
-          <span style="color:var(--green)">✓ ที่อยู่:</span> {dest_addr}<br>
-          <span style="font-size:10px;color:var(--muted);font-family:monospace">
-          {dest_lat:.5f}, {dest_lng:.5f}</span>
-        </div>""", unsafe_allow_html=True)
+                st.error(f"❌ Lalamove: {q['error']}")
+        else:
+            st.error("⚠️ ตั้งค่า Lalamove API key ใน secrets.toml")
 
     if has_quote:
         st.success(
