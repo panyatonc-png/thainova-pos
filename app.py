@@ -1657,11 +1657,16 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
             '📲 ลูกค้าโอนค่าจัดส่งให้ร้านก่อน — PromptPay: <strong>062-737-7700</strong></div>',
             unsafe_allow_html=True)
 
-    # ── ขั้นตอนที่ 4: ข้อมูลผู้รับ (from_cart เท่านั้น) ────────
+    # ══════════════════════════════════════════════════════════════
+    # ปุ่มคำนวณราคาเพียงปุ่มเดียว — validate ครบ → call API → fallback
+    # ══════════════════════════════════════════════════════════════
+    st.markdown("---")
+
+    # ── ข้อมูลผู้รับ (from_cart เท่านั้น) — อยู่ก่อนปุ่มทันที ──
     cust_name  = ""
     cust_phone = ""
     if from_cart:
-        st.markdown('<div class="co-section" style="margin-top:14px">', unsafe_allow_html=True)
+        st.markdown('<div class="co-section" style="margin-bottom:10px">', unsafe_allow_html=True)
         st.markdown('<div class="co-section-title">👤 ข้อมูลผู้รับ</div>', unsafe_allow_html=True)
         cust_name  = st.text_input("ชื่อ-นามสกุล / ชื่ออู่ *",
             value=st.session_state.cust_name, key="del_name",
@@ -1670,11 +1675,6 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
             value=st.session_state.cust_phone, key="del_phone",
             placeholder="0XX-XXX-XXXX")
         st.markdown('</div>', unsafe_allow_html=True)
-
-    # ══════════════════════════════════════════════════════════════
-    # ปุ่มคำนวณราคาเพียงปุ่มเดียว — validate ครบ → call API → fallback
-    # ══════════════════════════════════════════════════════════════
-    st.markdown("---")
     if st.button("💰 คำนวณราคาจัดส่ง", key="del_calc",
                  type="primary", use_container_width=True):
         # ── Step 1: resolve พิกัดปลายทาง ──────────────────────────
