@@ -1580,7 +1580,8 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Big delivery iframe (แผนที่ + vehicle display) ──────────
-    components.html(html, height=870, scrolling=True)
+    if not dest_lat:
+       components.html(html, height=420, scrolling=False)
     st.divider()
 
     # ══════════════════════════════════════════════════════════════
