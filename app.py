@@ -2227,12 +2227,17 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
 
     # DEBUG — ลบออกหลังเช็คเสร็จ
     if st.button("🔍 เช็คข้อมูล Purchase_Invoices จริงๆ"):
-        raw = sanitize_df(conn.read(worksheet="Purchase_Invoices", ttl=0))
-        nippon = raw[raw['ชื่อบริษัทผู้ขาย'].astype(str).str.contains('NIPPON|เอ็นพี', na=False)]
+        raw = conn.read(worksheet="Purchase_Invoices", ttl=0)
+        # แปลง dict/list เป็น string
+        for col in raw.columns:
+            if raw[col].dtype == object:
+                raw[col] = raw[col].astype(str)
+        nippon = raw[raw['ชื่อบริษัทผู้ขาย'].str.contains('NIPPON|เอ็นพี', na=False)]
+        nippon = nippon.copy()
         nippon['วันที่'] = pd.to_datetime(nippon['วันที่'], errors='coerce')
         feb = nippon[(nippon['วันที่'].dt.year==2026) & (nippon['วันที่'].dt.month==2)]
-        st.write(f"**ยอด NIPPON ก.พ. จาก Sheets จริงๆ: ฿{feb['ยอดรวมสินค้า'].sum():,.2f}**")
-        st.write(f"บิลที่พบ: {feb['InvoiceNo'].unique().tolist()}")
+        st.write(f"**ยอด NIPPON ก.พ. จาก Sheets: ฿{feb['ยอดรวมสินค้า'].sum():,.2f}**")
+        st.write(f"บิลที่พบ: {sorted(feb['InvoiceNo'].unique().tolist())}")
         st.dataframe(feb[['วันที่','InvoiceNo','ยอดรวมสินค้า']].groupby(['InvoiceNo','วันที่']).sum().reset_index())
 
     atabs = st.tabs(["📋 สต็อก","🚛 สั่งของ","📥 รับเข้า","🔢 Lot","💰 การเงิน","📦 Orders"])
