@@ -11,6 +11,13 @@ try:
 except ImportError:
     HAS_QR = False
 
+def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """แปลง column ที่เป็น dict/list ให้เป็น string เพื่อป้องกัน unhashable error"""
+    for col in df.columns:
+        if df[col].apply(lambda x: isinstance(x, (dict, list))).any():
+            df[col] = df[col].astype(str)
+    return df
+
 st.set_page_config(page_title="ThaiNova AutoPaint", page_icon="🎨",
                    layout="wide", initial_sidebar_state="collapsed")
 
@@ -277,11 +284,11 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 @st.cache_data(ttl=300)
 def load_data():
-    stock_df     = conn.read(worksheet="Stock")
-    reorder_df   = conn.read(worksheet="Reorder_All")
-    shelf_map_df = conn.read(worksheet="Shelf_Map")
-    purchase_df  = conn.read(worksheet="Purchase_Invoices")
-    lot_df       = conn.read(worksheet="Lot_Tracking")
+    stock_df     = sanitize_df(conn.read(worksheet="Stock"))
+    reorder_df   = sanitize_df(conn.read(worksheet="Reorder_All"))
+    shelf_map_df = sanitize_df(conn.read(worksheet="Shelf_Map"))
+    purchase_df  = sanitize_df(conn.read(worksheet="Purchase_Invoices"))
+    lot_df       = sanitize_df(conn.read(worksheet="Lot_Tracking"))
     merged = pd.merge(stock_df, shelf_map_df[['Barcode','ShelfMap']], on='Barcode', how='left')
     merged['ShelfMap'] = merged['ShelfMap'].fillna("ยังไม่ได้ระบุ")
     return merged, reorder_df, shelf_map_df, purchase_df, lot_df
@@ -473,7 +480,7 @@ def send_telegram(message: str):
 def update_order_status(order_id: str, updates: dict):
     """อัปเดต field ใน row ของ Orders sheet ที่ตรงกับ order_id"""
     try:
-        df = conn.read(worksheet="Orders")
+        df = sanitize_df(conn.read(worksheet="Orders"))
         if df is None or df.empty:
             return
         mask = df["OrderID"].astype(str) == str(order_id)
@@ -492,7 +499,7 @@ def update_order_status(order_id: str, updates: dict):
 def try_save_order(order_data: dict):
     try:
         try:
-            orders_df = conn.read(worksheet="Orders")
+            orders_df = sanitize_df(conn.read(worksheet="Orders"))
         except:
             orders_df = pd.DataFrame()
         new_row = pd.DataFrame([order_data])
@@ -2157,7 +2164,7 @@ def page_admin_orders():
 
     # ── โหลด Orders sheet ──────────────────────────────────────
     try:
-        raw = conn.read(worksheet="Orders")
+        raw = sanitize_df(conn.read(worksheet="Orders"))
     except Exception as e:
         st.info("💡 ยังไม่มีข้อมูลออเดอร์ หรือยังไม่ได้สร้าง worksheet **Orders** ใน Google Sheets")
         st.caption(f"Detail: {e}")
