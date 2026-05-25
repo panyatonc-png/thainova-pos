@@ -11,13 +11,6 @@ try:
 except ImportError:
     HAS_QR = False
 
-def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """แปลง column ที่เป็น dict/list ให้เป็น string เพื่อป้องกัน unhashable error"""
-    for col in df.columns:
-        if df[col].apply(lambda x: isinstance(x, (dict, list))).any():
-            df[col] = df[col].astype(str)
-    return df
-
 st.set_page_config(page_title="ThaiNova AutoPaint", page_icon="🎨",
                    layout="wide", initial_sidebar_state="collapsed")
 
@@ -284,11 +277,11 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 @st.cache_data(ttl=300)
 def load_data():
-    stock_df     = sanitize_df(conn.read(worksheet="Stock"))
-    reorder_df   = sanitize_df(conn.read(worksheet="Reorder_All"))
-    shelf_map_df = sanitize_df(conn.read(worksheet="Shelf_Map"))
-    purchase_df  = sanitize_df(conn.read(worksheet="Purchase_Invoices"))
-    lot_df       = sanitize_df(conn.read(worksheet="Lot_Tracking"))
+    stock_df     = conn.read(worksheet="Stock")
+    reorder_df   = conn.read(worksheet="Reorder_All")
+    shelf_map_df = conn.read(worksheet="Shelf_Map")
+    purchase_df  = conn.read(worksheet="Purchase_Invoices")
+    lot_df       = conn.read(worksheet="Lot_Tracking")
     merged = pd.merge(stock_df, shelf_map_df[['Barcode','ShelfMap']], on='Barcode', how='left')
     merged['ShelfMap'] = merged['ShelfMap'].fillna("ยังไม่ได้ระบุ")
     return merged, reorder_df, shelf_map_df, purchase_df, lot_df
@@ -464,42 +457,10 @@ def geocode(addr, mkey=""):
 def gen_order_id():
     return "TN" + datetime.now().strftime("%y%m%d%H%M%S")
 
-def send_telegram(message: str):
-    """ส่งแจ้งเตือน Telegram — ล้มเหลวเงียบๆ ไม่หยุด flow"""
-    try:
-        token   = st.secrets["telegram"]["bot_token"]
-        chat_id = st.secrets["telegram"]["chat_id"]
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
-            timeout=5,
-        )
-    except Exception:
-        pass
-
-def update_order_status(order_id: str, updates: dict):
-    """อัปเดต field ใน row ของ Orders sheet ที่ตรงกับ order_id"""
-    try:
-        df = sanitize_df(conn.read(worksheet="Orders"))
-        if df is None or df.empty:
-            return
-        mask = df["OrderID"].astype(str) == str(order_id)
-        if not mask.any():
-            return
-        for k, v in updates.items():
-            if k in df.columns:
-                df.loc[mask, k] = v
-            else:
-                df[k] = ""
-                df.loc[mask, k] = v
-        conn.update(worksheet="Orders", data=df)
-    except Exception:
-        pass
-
 def try_save_order(order_data: dict):
     try:
         try:
-            orders_df = sanitize_df(conn.read(worksheet="Orders"))
+            orders_df = conn.read(worksheet="Orders")
         except:
             orders_df = pd.DataFrame()
         new_row = pd.DataFrame([order_data])
@@ -1826,13 +1787,6 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                 st.session_state.checkout_vehicle        = veh_sel
                 st.session_state.checkout_stop_sender    = q["stop_sender"]
                 st.session_state.checkout_stop_recipient = q["stop_recipient"]
-                send_telegram(
-                    f"🔔 <b>Lead ใหม่!</b>\n"
-                    f"📍 ปลายทาง: {st.session_state.checkout_addr}\n"
-                    f"🚗 ยานพาหนะ: {VEHICLES[veh_sel]['label']}\n"
-                    f"💵 ค่าส่งประมาณ: ฿{q['price']}\n"
-                    f"⏰ {datetime.now().strftime('%d/%m %H:%M')}"
-                )
                 st.rerun()
             else:
                 fallback = str(VEHICLES[veh_sel]["price"])
@@ -1987,50 +1941,40 @@ h1 span{{color:var(--red)}}.sub{{font-size:10px;color:var(--mu);text-align:cente
                     st.error(f"❌ เบอร์โทรไม่ถูกต้อง: '{cust_phone}' — กรุณากรอกเช่น 0812345678 หรือ +66812345678")
                     st.stop()
 
-                order_id = gen_order_id()
-                # ── บันทึกออเดอร์ก่อน — ยังไม่ยิง Lalamove ──────────
+                order_id = gen_order_id(); lala_order_id = ""; share_link = ""
+                is_pod   = lala_pay_key == "recipient_cash"
+                real_quote = st.session_state.checkout_quote_id not in (None, "estimate")
+                if real_quote and keys_ok:
+                    with st.spinner("กำลังสร้าง Lalamove order..."):
+                        lo = create_lala_order(
+                            st.session_state.checkout_quote_id,
+                            st.session_state.get("checkout_stop_sender",    "1"),
+                            st.session_state.get("checkout_stop_recipient", "2"),
+                            cust_name, _phone, lk, ls, is_pod=is_pod)
+                    if lo.get("debug"):
+                        with st.expander("🔍 Lalamove Debug Response", expanded=not lo["ok"]):
+                            st.json(lo["debug"])
+                    if lo["ok"]:
+                        lala_order_id = lo["order_id"]; share_link = lo["share_link"]
+                    else:
+                        st.error(f"❌ Lalamove create order ล้มเหลว:\n{lo['error']}")
+                        st.stop()
                 try_save_order({
-                    "OrderID":         order_id,
-                    "DateTime":        datetime.now().isoformat(),
-                    "CustomerName":    cust_name,
-                    "CustomerPhone":   _phone,
-                    "Items":           json.dumps({ck:cv for ck,cv in st.session_state.cart.items()},
-                                                  ensure_ascii=False),
-                    "CartTotal":       cart_amt,
-                    "DeliveryMethod":  "lalamove",
-                    "DeliveryAddr":    dest_addr,
-                    "Vehicle":         veh_sel,
-                    "DeliveryFee":     delivery_fee_num,
-                    "PaymentMethod":   st.session_state.payment_method,
-                    "TotalAmount":     total_amt,
-                    "QuotationID":     st.session_state.checkout_quote_id or "",
-                    "StopSender":      st.session_state.get("checkout_stop_sender", ""),
-                    "StopRecipient":   st.session_state.get("checkout_stop_recipient", ""),
-                    "LalamoveID":      "",
-                    "Status":          "รอตรวจสอบ",
+                    "OrderID": order_id, "DateTime": datetime.now().isoformat(),
+                    "CustomerName": cust_name, "CustomerPhone": _phone,
+                    "Items": json.dumps({ck:cv for ck,cv in st.session_state.cart.items()},
+                                        ensure_ascii=False),
+                    "CartTotal": cart_amt, "DeliveryMethod": "lalamove",
+                    "DeliveryAddr": dest_addr, "Vehicle": veh_sel,
+                    "DeliveryFee": delivery_fee_num,
+                    "PaymentMethod": st.session_state.payment_method,
+                    "TotalAmount": total_amt, "LalamoveID": lala_order_id, "Status": "pending",
                 })
-                # ── แจ้งเตือน Telegram ────────────────────────────────
-                _items_short = ", ".join(
-                    f"{v.get('name','?')[:15]}×{v.get('qty',1)}"
-                    for v in st.session_state.cart.values()
-                )
-                send_telegram(
-                    f"🛒 <b>ออเดอร์ใหม่!</b>  #{order_id}\n"
-                    f"👤 {cust_name}  📞 {_phone}\n"
-                    f"📍 {dest_addr}\n"
-                    f"🚗 {VEHICLES.get(veh_sel,{}).get('label', veh_sel)}\n"
-                    f"💵 ค่าส่ง ฿{delivery_fee_num:,.0f}  |  ยอดรวม ฿{total_amt:,.0f}\n"
-                    f"🛍️ {_items_short}\n"
-                    f"💳 {st.session_state.payment_method}\n"
-                    f"⏰ {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-                    f"<i>รอ Admin อนุมัติ</i>"
-                )
-                # ── เคลียร์ตะกร้า + ไปหน้า confirmed ──────────────────
                 st.session_state.cust_name        = cust_name
                 st.session_state.cust_phone       = cust_phone
                 st.session_state.order_id         = order_id
-                st.session_state.order_lala_id    = ""
-                st.session_state.order_share_link = ""
+                st.session_state.order_lala_id    = lala_order_id
+                st.session_state.order_share_link = share_link
                 st.session_state.cart             = {}
                 go('confirmed')
 
@@ -2149,250 +2093,6 @@ def page_contact():
 
 
 # ══════════════════════════════════════════════════════════════
-# ADMIN — Orders Report + Approve / Cancel
-# ══════════════════════════════════════════════════════════════
-def page_admin_orders():
-    """รายงานออเดอร์ลูกค้า — ดึงจาก Google Sheet worksheet 'Orders'
-    Admin สามารถ Approve (→ ยิง Lalamove) หรือ Cancel ได้ต่อออเดอร์"""
-    ALL_COLS = ['OrderID','DateTime','CustomerName','CustomerPhone','Items',
-                'CartTotal','DeliveryMethod','DeliveryAddr','Vehicle',
-                'DeliveryFee','PaymentMethod','TotalAmount',
-                'QuotationID','StopSender','StopRecipient',
-                'LalamoveID','Status']
-
-    lk, ls, mk, pp, keys_ok = get_secrets()
-
-    # ── โหลด Orders sheet ──────────────────────────────────────
-    try:
-        raw = sanitize_df(conn.read(worksheet="Orders"))
-    except Exception as e:
-        st.info("💡 ยังไม่มีข้อมูลออเดอร์ หรือยังไม่ได้สร้าง worksheet **Orders** ใน Google Sheets")
-        st.caption(f"Detail: {e}")
-        return
-
-    if raw is None or raw.empty:
-        st.info("📭 ยังไม่มีออเดอร์ลูกค้า")
-        return
-
-    # เติม column ที่ขาดเป็นค่าว่าง — ป้องกัน crash
-    for col in ALL_COLS:
-        if col not in raw.columns:
-            raw[col] = ""
-
-    df = raw.copy()
-    for col in ALL_COLS:
-        if col not in df.columns:
-            df[col] = ""
-
-    # ── แปลง Items JSON → ข้อความอ่านง่าย ─────────────────────
-    def _fmt_items(val):
-        try:
-            d = json.loads(str(val))
-            parts = [f"{v.get('name','?')[:20]} ×{v.get('qty',1)}" for v in d.values()]
-            return ", ".join(parts)
-        except Exception:
-            return str(val) if val else ""
-
-    # ── แปลง numeric ──────────────────────────────────────────
-    for _nc in ["CartTotal","DeliveryFee","TotalAmount"]:
-        df[_nc] = pd.to_numeric(df[_nc], errors="coerce").fillna(0)
-
-    # ── sort DateTime ใหม่สุดบน ───────────────────────────────
-    df["DateTime"] = pd.to_datetime(df["DateTime"], errors="coerce")
-    df = df.sort_values("DateTime", ascending=False).reset_index(drop=True)
-
-    # ── Metrics ───────────────────────────────────────────────
-    total_orders   = len(df)
-    total_revenue  = df["TotalAmount"].sum()
-    total_delivery = df["DeliveryFee"].sum()
-    wait_count     = int((df["Status"].astype(str) == "รอตรวจสอบ").sum())
-    approved_count = int((df["Status"].astype(str) == "อนุมัติแล้ว").sum())
-
-    mc1,mc2,mc3,mc4,mc5 = st.columns(5)
-    mc1.metric("📦 ออเดอร์ทั้งหมด",  f"{total_orders:,}")
-    mc2.metric("💰 ยอดขายรวม",        f"฿{total_revenue:,.0f}")
-    mc3.metric("🚚 ค่าส่งรวม",        f"฿{total_delivery:,.0f}")
-    mc4.metric("⏳ รอตรวจสอบ",        f"{wait_count:,}")
-    mc5.metric("✅ อนุมัติแล้ว",      f"{approved_count:,}")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Filters ───────────────────────────────────────────────
-    fa,fb,fc,fe = st.columns([4,2,2,1])
-    with fa:
-        kw = st.text_input("🔍 ค้นหา OrderID / ชื่อ / เบอร์:",
-                           key="ao_kw", placeholder="เช่น TN250601 หรือ 0812345678",
-                           label_visibility="collapsed")
-    with fb:
-        status_vals = df["Status"].dropna().astype(str).unique().tolist()
-        status_opts = ["ทั้งหมด"] + sorted(status_vals)
-        f_status    = st.selectbox("Status", status_opts, key="ao_status")
-    with fc:
-        pay_opts = ["ทั้งหมด"] + sorted(df["PaymentMethod"].dropna().astype(str).unique().tolist())
-        f_pay    = st.selectbox("ชำระ", pay_opts, key="ao_pay")
-    with fe:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("🔄 Refresh", key="ao_refresh", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
-
-    # ── Apply filters ──────────────────────────────────────────
-    filtered = df.copy()
-    if kw:
-        mask = (
-            filtered["OrderID"].astype(str).str.contains(kw, case=False, na=False) |
-            filtered["CustomerName"].astype(str).str.contains(kw, case=False, na=False) |
-            filtered["CustomerPhone"].astype(str).str.contains(kw, case=False, na=False)
-        )
-        filtered = filtered[mask]
-    if f_status != "ทั้งหมด":
-        filtered = filtered[filtered["Status"].astype(str) == f_status]
-    if f_pay != "ทั้งหมด":
-        filtered = filtered[filtered["PaymentMethod"].astype(str) == f_pay]
-
-    st.caption(f"แสดง {len(filtered):,} จาก {total_orders:,} ออเดอร์")
-
-    if filtered.empty:
-        st.info("ไม่พบออเดอร์ที่ตรงกับเงื่อนไข")
-        return
-
-    # ── Summary table (read-only) ───────────────────────────────
-    with st.expander("📊 ตารางสรุปทั้งหมด", expanded=False):
-        show_cols = ['OrderID','DateTime','CustomerName','CustomerPhone',
-                     'DeliveryAddr','Vehicle','DeliveryFee','TotalAmount',
-                     'PaymentMethod','LalamoveID','Status']
-        show_cols = [c for c in show_cols if c in filtered.columns]
-        tbl = filtered[show_cols].copy()
-        tbl["Items"] = filtered["Items"].apply(_fmt_items)
-        st.dataframe(tbl, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-    st.markdown("### 📋 จัดการออเดอร์ทีละรายการ")
-
-    # ── Per-order cards with Approve / Cancel ─────────────────
-    for _, row in filtered.iterrows():
-        oid    = str(row.get("OrderID",""))
-        status = str(row.get("Status",""))
-        cname  = str(row.get("CustomerName",""))
-        cphone = str(row.get("CustomerPhone",""))
-        addr   = str(row.get("DeliveryAddr",""))
-        veh    = str(row.get("Vehicle",""))
-        fee    = row.get("DeliveryFee", 0)
-        total  = row.get("TotalAmount", 0)
-        pay    = str(row.get("PaymentMethod",""))
-        lala_id = str(row.get("LalamoveID",""))
-        quote_id    = str(row.get("QuotationID",""))
-        stop_sender = str(row.get("StopSender",""))
-        stop_recip  = str(row.get("StopRecipient",""))
-        dt_raw = row.get("DateTime","")
-        try:
-            dt_str = pd.Timestamp(dt_raw).strftime("%d/%m/%Y %H:%M") if pd.notna(dt_raw) else ""
-        except Exception:
-            dt_str = str(dt_raw)
-
-        items_str = _fmt_items(row.get("Items",""))
-
-        # สี badge ตาม status
-        _status_color = {
-            "รอตรวจสอบ": "#C9A84C",
-            "อนุมัติแล้ว": "#4ade80",
-            "ยกเลิก": "#ef4444",
-        }.get(status, "#888")
-
-        with st.container():
-            st.markdown(
-                f"""<div style="border:1px solid var(--border);border-radius:12px;
-                     padding:14px 18px;margin-bottom:10px;background:var(--surface2)">
-                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-                    <span style="font-weight:700;font-size:15px">#{oid}</span>
-                    <span style="background:{_status_color}22;color:{_status_color};
-                         border:1px solid {_status_color};border-radius:20px;
-                         padding:2px 10px;font-size:12px;font-weight:600">{status}</span>
-                  </div>
-                  <div style="font-size:13px;line-height:1.7;color:var(--text)">
-                    👤 <b>{cname}</b> &nbsp; 📞 {cphone}<br>
-                    📍 {addr}<br>
-                    🚗 {VEHICLES.get(veh,{{}}).get('label', veh)} &nbsp;
-                    💵 ค่าส่ง ฿{fee:,.0f} &nbsp; | &nbsp; ยอดรวม ฿{total:,.0f}<br>
-                    💳 {pay} &nbsp; ⏰ {dt_str}<br>
-                    🛍️ {items_str}
-                    {"<br>🚚 LalamoveID: <code>" + lala_id + "</code>" if lala_id else ""}
-                  </div>
-                </div>""",
-                unsafe_allow_html=True,
-            )
-
-            # ── Action buttons ─────────────────────────────────
-            if status == "รอตรวจสอบ":
-                _ba, _bb, _ = st.columns([2, 2, 4])
-                with _ba:
-                    if st.button("✅ อนุมัติ + ส่ง Lalamove", key=f"approve_{oid}",
-                                 use_container_width=True, type="primary"):
-                        # เรียก Lalamove เฉพาะถ้ามี quotation และ API key
-                        _new_lala_id = ""
-                        if quote_id and quote_id not in ("", "estimate") and keys_ok:
-                            with st.spinner(f"🚀 กำลังสร้าง Lalamove order สำหรับ {oid}..."):
-                                lo = create_lala_order(
-                                    quote_id, stop_sender, stop_recip,
-                                    cname, cphone, lk, ls)
-                            if lo.get("debug"):
-                                with st.expander("🔍 Lalamove Debug", expanded=not lo["ok"]):
-                                    st.json(lo["debug"])
-                            if lo["ok"]:
-                                _new_lala_id = lo["order_id"]
-                                update_order_status(oid, {
-                                    "Status":     "อนุมัติแล้ว",
-                                    "LalamoveID": _new_lala_id,
-                                })
-                                send_telegram(
-                                    f"✅ <b>Admin อนุมัติ</b>  #{oid}\n"
-                                    f"👤 {cname}  📞 {cphone}\n"
-                                    f"🚚 Lalamove ID: {_new_lala_id}\n"
-                                    f"⏰ {datetime.now().strftime('%d/%m/%Y %H:%M')}"
-                                )
-                                st.success(f"✅ สร้าง Lalamove order สำเร็จ! ID: {_new_lala_id}")
-                            else:
-                                st.error(f"❌ Lalamove ล้มเหลว: {lo['error']}")
-                                st.stop()
-                        else:
-                            # ไม่มี quotation — อนุมัติแค่ใน sheet
-                            update_order_status(oid, {"Status": "อนุมัติแล้ว"})
-                            send_telegram(
-                                f"✅ <b>Admin อนุมัติ (ไม่มี quotation)</b>  #{oid}\n"
-                                f"👤 {cname}  📞 {cphone}\n"
-                                f"⏰ {datetime.now().strftime('%d/%m/%Y %H:%M')}"
-                            )
-                            st.success("✅ อนุมัติออเดอร์แล้ว (ไม่มี Lalamove quotation)")
-                        st.rerun()
-                with _bb:
-                    if st.button("❌ ยกเลิก", key=f"cancel_{oid}",
-                                 use_container_width=True):
-                        update_order_status(oid, {"Status": "ยกเลิก"})
-                        send_telegram(
-                            f"❌ <b>Admin ยกเลิก</b>  #{oid}\n"
-                            f"👤 {cname}  📞 {cphone}\n"
-                            f"⏰ {datetime.now().strftime('%d/%m/%Y %H:%M')}"
-                        )
-                        st.warning("❌ ยกเลิกออเดอร์แล้ว")
-                        st.rerun()
-            elif status == "อนุมัติแล้ว":
-                _bc, _ = st.columns([2, 6])
-                with _bc:
-                    if st.button("❌ ยกเลิก", key=f"cancel_approved_{oid}",
-                                 use_container_width=True):
-                        update_order_status(oid, {"Status": "ยกเลิก"})
-                        send_telegram(
-                            f"❌ <b>Admin ยกเลิก (หลังอนุมัติ)</b>  #{oid}\n"
-                            f"👤 {cname}  📞 {cphone}\n"
-                            f"⏰ {datetime.now().strftime('%d/%m/%Y %H:%M')}"
-                        )
-                        st.warning("❌ ยกเลิกออเดอร์แล้ว")
-                        st.rerun()
-
-        st.markdown("<div style='margin-bottom:4px'></div>", unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════
 # ADMIN
 # ══════════════════════════════════════════════════════════════
 def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
@@ -2493,8 +2193,20 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
                              use_container_width=True, hide_index=True)
 
     with atabs[5]:
-        st.markdown('<div class="co-section-title">📋 รายงานออเดอร์ลูกค้า</div>', unsafe_allow_html=True)
-        page_admin_orders()
+        st.markdown('<div class="co-section-title">ออเดอร์จากลูกค้าออนไลน์</div>', unsafe_allow_html=True)
+        try:
+            orders_df = conn.read(worksheet="Orders")
+            if not orders_df.empty:
+                display_cols = [c for c in ['OrderID','DateTime','CustomerName','CustomerPhone',
+                                             'TotalAmount','DeliveryMethod','Status'] if c in orders_df.columns]
+                st.dataframe(orders_df[display_cols].sort_values('DateTime', ascending=False) if 'DateTime' in orders_df.columns else orders_df[display_cols],
+                             use_container_width=True, hide_index=True)
+            else:
+                st.info("ยังไม่มีออเดอร์")
+        except:
+            st.info("💡 สร้างแท็บ **Orders** ใน Google Sheets เพื่อบันทึกออเดอร์อัตโนมัติ\n\n"
+                    "คอลัมน์: OrderID, DateTime, CustomerName, CustomerPhone, Items, CartTotal, "
+                    "DeliveryMethod, DeliveryAddr, Vehicle, DeliveryFee, PaymentMethod, TotalAmount, LalamoveID, Status")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
