@@ -2271,7 +2271,7 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
 
     with atabs[2]:
         if not purchase_df.empty:
-            purchase_df['วันที่'] = pd.to_datetime(purchase_df['วันที่'], errors='coerce')
+            purchase_df['วันที่'] = pd.to_datetime(purchase_df['วันที่'].astype(str).str.strip(), errors='coerce', format='mixed')
             years = sorted([int(y) for y in purchase_df['วันที่'].dt.year.dropna().unique()], reverse=True)
             mn = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."]
             c1,c2 = st.columns(2)
@@ -2308,7 +2308,7 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
 
     with atabs[4]:
         if not purchase_df.empty and 'ยอดรวมสินค้า' in purchase_df.columns:
-            purchase_df['วันที่'] = pd.to_datetime(purchase_df['วันที่'], errors='coerce')
+            purchase_df['วันที่'] = pd.to_datetime(purchase_df['วันที่'].astype(str).str.strip(), errors='coerce', format='mixed')
             yf  = sorted([int(y) for y in purchase_df['วันที่'].dt.year.dropna().unique()], reverse=True)
             mnf = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."]
             f1,f2 = st.columns(2)
