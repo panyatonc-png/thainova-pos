@@ -2226,7 +2226,8 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
     st.divider()
 
     # DEBUG — ลบออกหลังเช็คเสร็จ
-    if st.button("🔍 เช็คข้อมูล Purchase_Invoices จริงๆ"):
+    if st.button("🔍 เช็คและ Refresh Purchase_Invoices"):
+        st.cache_data.clear()
         raw = conn.read(worksheet="Purchase_Invoices", ttl=0)
         # แปลง dict/list เป็น string
         for col in raw.columns:
@@ -2239,6 +2240,10 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
         st.write(f"**ยอด NIPPON ก.พ. จาก Sheets: ฿{feb['ยอดรวมสินค้า'].sum():,.2f}**")
         st.write(f"บิลที่พบ: {sorted(feb['InvoiceNo'].unique().tolist())}")
         st.dataframe(feb[['วันที่','InvoiceNo','ยอดรวมสินค้า']].groupby(['InvoiceNo','วันที่']).sum().reset_index())
+
+    if st.button("🔄 Refresh ข้อมูล (ล้าง Cache)", key="admin_refresh_top"):
+        st.cache_data.clear()
+        st.rerun()
 
     atabs = st.tabs(["📋 สต็อก","🚛 สั่งของ","📥 รับเข้า","🔢 Lot","💰 การเงิน","📦 Orders"])
 
