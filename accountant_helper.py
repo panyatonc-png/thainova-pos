@@ -162,6 +162,8 @@ def _build_print_html(bills: list, date_from: date, date_to: date) -> str:
                 stock_cell = f'0 <span class="bc">(ขายแล้ว {abs(sb):,.0f})</span>'
             else:
                 stock_cell = f"{sb:,.0f}"
+            sn = r.get("stock_now")
+            now_cell = f"{sn:,.0f}" if sn is not None else "—"
             rows_html.append(
                 f'<tr{cls}><td>{i}</td>'
                 f'<td class="code">{code}</td>'
@@ -169,6 +171,7 @@ def _build_print_html(bills: list, date_from: date, date_to: date) -> str:
                 f'<span class="bc">{e(r["barcode"])}</span></td>'
                 f'<td class="num">{stock_cell}</td>'
                 f'<td class="num">{r["qty"]:,.0f}</td>'
+                f'<td class="num">{now_cell}</td>'
                 f'<td>{e(unit)}</td>'
                 f'<td class="num">{r["price"]:,.2f}</td>'
                 f'<td class="num">{r["total"]:,.2f}</td></tr>')
@@ -187,14 +190,16 @@ def _build_print_html(bills: list, date_from: date, date_to: date) -> str:
     <thead><tr>
       <th style="width:22px">#</th><th style="width:95px">รหัสบัญชี</th>
       <th>ชื่อสินค้า / บาร์โค้ด</th>
-      <th style="width:62px" class="num">สต็อคก่อนรับ*</th>
-      <th style="width:52px" class="num">จำนวนรับ</th><th style="width:52px">หน่วย</th>
-      <th style="width:62px" class="num">ทุน/หน่วย</th>
-      <th style="width:70px" class="num">รวม</th>
+      <th style="width:60px" class="num">สต็อคก่อนรับ*</th>
+      <th style="width:50px" class="num">จำนวนรับ</th>
+      <th style="width:58px" class="num">คงเหลือล่าสุด</th>
+      <th style="width:48px">หน่วย</th>
+      <th style="width:60px" class="num">ทุน/หน่วย</th>
+      <th style="width:68px" class="num">รวม</th>
     </tr></thead>
     <tbody>{''.join(rows_html)}</tbody>
     <tfoot><tr>
-      <td colspan="6"><b>รวมบิลนี้ · {len(b["items"])} รายการ{unk_note}</b></td>
+      <td colspan="7"><b>รวมบิลนี้ · {len(b["items"])} รายการ{unk_note}</b></td>
       <td colspan="2" class="num"><b>{b["total"]:,.2f}</b></td>
     </tr></tfoot>
   </table>
@@ -352,12 +357,14 @@ def render_reference_tab(purchase_df: pd.DataFrame, stock_df: pd.DataFrame = Non
             if not total:
                 total = qty * price
             bc = _norm_barcode(r.get("Barcode", ""))
+            _now = stock_map.get(bc)
             items.append({
                 "acc_code": r["acc_code"], "acc_name": r["acc_name"],
                 "acc_unit": r["acc_unit"],
                 "pos_name": str(r.get(name_col, "")),
                 "barcode":  bc,
                 "stock_before": _stock_before(bc, bdate),
+                "stock_now": float(_now) if _now is not None and not pd.isna(_now) else None,
                 "qty": qty, "price": price, "total": total,
             })
         bills.append({
