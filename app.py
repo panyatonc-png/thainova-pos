@@ -11,6 +11,12 @@ try:
 except ImportError:
     HAS_QR = False
 
+try:
+    import accountant_helper
+    HAS_ACC_HELPER = True
+except ImportError:
+    HAS_ACC_HELPER = False
+
 st.set_page_config(page_title="ThaiNova AutoPaint", page_icon="🎨",
                    layout="wide", initial_sidebar_state="collapsed")
 
@@ -2245,7 +2251,8 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
         st.cache_data.clear()
         st.rerun()
 
-    atabs = st.tabs(["📋 สต็อก","🚛 สั่งของ","📥 รับเข้า","🔢 Lot","💰 การเงิน","📦 Orders"])
+    atabs = st.tabs(["📋 สต็อก","🚛 สั่งของ","📥 รับเข้า","🔢 Lot","💰 การเงิน","📦 Orders",
+                     "🔎 ค้นรหัสบัญชี","📑 ใบอ้างอิงบัญชี"])
 
     with atabs[0]:
         q = st.text_input("🔍 ค้นหา / Barcode:", key="aq")
@@ -2326,6 +2333,20 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
     with atabs[5]:
         st.markdown('<div class="co-section-title">📋 รายงานออเดอร์ลูกค้า</div>', unsafe_allow_html=True)
         page_admin_orders()
+
+    with atabs[6]:
+        st.markdown('<div class="co-section-title">🔎 ค้นหารหัสบัญชี AccOffice</div>', unsafe_allow_html=True)
+        if HAS_ACC_HELPER:
+            accountant_helper.render_search_tab()
+        else:
+            st.error("❌ ไม่พบไฟล์ accountant_helper.py ใน repo")
+
+    with atabs[7]:
+        st.markdown('<div class="co-section-title">📑 ใบอ้างอิงคีย์บิลซื้อ (A4)</div>', unsafe_allow_html=True)
+        if HAS_ACC_HELPER:
+            accountant_helper.render_reference_tab(purchase_df)
+        else:
+            st.error("❌ ไม่พบไฟล์ accountant_helper.py ใน repo")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
