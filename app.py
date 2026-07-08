@@ -2344,7 +2344,7 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
     with atabs[7]:
         st.markdown('<div class="co-section-title">📑 ใบอ้างอิงคีย์บิลซื้อ (A4)</div>', unsafe_allow_html=True)
         if HAS_ACC_HELPER:
-            accountant_helper.render_reference_tab(purchase_df)
+            accountant_helper.render_reference_tab(purchase_df, stock_df)
         else:
             st.error("❌ ไม่พบไฟล์ accountant_helper.py ใน repo")
 

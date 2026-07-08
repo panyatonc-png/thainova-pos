@@ -154,14 +154,15 @@ def _build_print_html(bills: list, date_from: date, date_to: date) -> str:
             unknown = not r["acc_code"]
             cls = ' class="unk"' if unknown else ""
             code = "ไม่รู้รหัส ＿＿＿＿" if unknown else e(r["acc_code"])
-            aname = "— เติมด้วยมือ —" if unknown else e(r["acc_name"])
             unit = r["acc_unit"] or "—"
+            sb = r.get("stock_before")
+            stock_cell = f"{sb:,.0f}" if sb is not None else "—"
             rows_html.append(
                 f'<tr{cls}><td>{i}</td>'
                 f'<td class="code">{code}</td>'
-                f'<td>{aname}</td>'
                 f'<td class="pos">{e(r["pos_name"])}<br>'
                 f'<span class="bc">{e(r["barcode"])}</span></td>'
+                f'<td class="num">{stock_cell}</td>'
                 f'<td class="num">{r["qty"]:,.0f}</td>'
                 f'<td>{e(unit)}</td>'
                 f'<td class="num">{r["price"]:,.2f}</td>'
@@ -179,9 +180,10 @@ def _build_print_html(bills: list, date_from: date, date_to: date) -> str:
   </div>
   <table>
     <thead><tr>
-      <th style="width:22px">#</th><th style="width:90px">รหัสบัญชี</th>
-      <th>ชื่อในบัญชี (AccOffice)</th><th>ชื่อใน POS / บาร์โค้ด</th>
-      <th style="width:45px" class="num">จำนวน</th><th style="width:52px">หน่วย</th>
+      <th style="width:22px">#</th><th style="width:95px">รหัสบัญชี</th>
+      <th>ชื่อสินค้า / บาร์โค้ด</th>
+      <th style="width:62px" class="num">สต็อคก่อนรับ*</th>
+      <th style="width:52px" class="num">จำนวนรับ</th><th style="width:52px">หน่วย</th>
       <th style="width:62px" class="num">ทุน/หน่วย</th>
       <th style="width:70px" class="num">รวม</th>
     </tr></thead>
@@ -250,9 +252,12 @@ def _build_print_html(bills: list, date_from: date, date_to: date) -> str:
 </div>
 {''.join(bill_blocks)}
 <div class="grand">รวมทุกบิล ({n_bills} บิล): {grand:,.2f} บาท</div>
+<div style="margin-top:8px;font-size:10.5px;color:#888">
+  * สต็อคก่อนรับ = สต็อคปัจจุบัน − ยอดรับเข้าตั้งแต่วันที่บิลถึงวันนี้
+  (ไม่หักยอดขายที่เกิดหลังวันที่บิล — บิลยิ่งเก่าตัวเลขยิ่งคลาดเคลื่อน)</div>
 </body></html>"""
 
-def render_reference_tab(purchase_df: pd.DataFrame):
+def render_reference_tab(purchase_df: pd.DataFrame, stock_df: pd.DataFrame = None):
     mapping   = load_mapping()
     suppliers = load_supplier_mapping()
 
@@ -264,6 +269,25 @@ def render_reference_tab(purchase_df: pd.DataFrame):
     df["วันที่"] = pd.to_datetime(df["วันที่"].astype(str).str.strip(),
                                    errors="coerce", format="mixed")
     df = df.dropna(subset=["วันที่"])
+
+    # ── สต็อคปัจจุบัน + ประวัติรับเข้าทั้งหมด (ไว้คำนวณสต็อคก่อนรับ) ──
+    stock_map = {}
+    if stock_df is not None and not stock_df.empty and "Qty" in stock_df.columns:
+        for _, sr in stock_df.iterrows():
+            stock_map[_norm_barcode(sr.get("Barcode", ""))] = \
+                pd.to_numeric(sr.get("Qty"), errors="coerce")
+    hist = df[["Barcode", "วันที่", "จำนวน"]].copy()
+    hist["_bc"]  = hist["Barcode"].apply(_norm_barcode)
+    hist["_qty"] = pd.to_numeric(hist["จำนวน"], errors="coerce").fillna(0)
+
+    def _stock_before(bc: str, bill_dt) -> float | None:
+        """สต็อคก่อนรับ = สต็อคปัจจุบัน − ยอดรับเข้าตั้งแต่วันบิลถึงวันนี้"""
+        cur = stock_map.get(bc)
+        if cur is None or pd.isna(cur):
+            return None
+        received_since = hist.loc[
+            (hist["_bc"] == bc) & (hist["วันที่"] >= bill_dt), "_qty"].sum()
+        return float(cur) - float(received_since)
 
     price_col = _find_price_col(df)
     if price_col is None:
@@ -321,11 +345,13 @@ def render_reference_tab(purchase_df: pd.DataFrame):
             total = float(r.get("ยอดรวมสินค้า", 0) or 0)
             if not total:
                 total = qty * price
+            bc = _norm_barcode(r.get("Barcode", ""))
             items.append({
                 "acc_code": r["acc_code"], "acc_name": r["acc_name"],
                 "acc_unit": r["acc_unit"],
                 "pos_name": str(r.get(name_col, "")),
-                "barcode":  _norm_barcode(r.get("Barcode", "")),
+                "barcode":  bc,
+                "stock_before": _stock_before(bc, bdate),
                 "qty": qty, "price": price, "total": total,
             })
         bills.append({
