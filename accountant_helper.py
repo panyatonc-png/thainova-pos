@@ -156,7 +156,12 @@ def _build_print_html(bills: list, date_from: date, date_to: date) -> str:
             code = "ไม่รู้รหัส ＿＿＿＿" if unknown else e(r["acc_code"])
             unit = r["acc_unit"] or "—"
             sb = r.get("stock_before")
-            stock_cell = f"{sb:,.0f}" if sb is not None else "—"
+            if sb is None:
+                stock_cell = "—"
+            elif sb < 0:
+                stock_cell = f'0 <span class="bc">(ขายแล้ว {abs(sb):,.0f})</span>'
+            else:
+                stock_cell = f"{sb:,.0f}"
             rows_html.append(
                 f'<tr{cls}><td>{i}</td>'
                 f'<td class="code">{code}</td>'
@@ -254,7 +259,8 @@ def _build_print_html(bills: list, date_from: date, date_to: date) -> str:
 <div class="grand">รวมทุกบิล ({n_bills} บิล): {grand:,.2f} บาท</div>
 <div style="margin-top:8px;font-size:10.5px;color:#888">
   * สต็อคก่อนรับ = สต็อคปัจจุบัน − ยอดรับเข้าตั้งแต่วันที่บิลถึงวันนี้
-  (ไม่หักยอดขายที่เกิดหลังวันที่บิล — บิลยิ่งเก่าตัวเลขยิ่งคลาดเคลื่อน)</div>
+  · "(ขายแล้ว N)" = มีการขายอย่างน้อย N ชิ้นหลังวันที่บิล
+  · พิมพ์ทันทีหลังรับเข้าเพื่อความแม่นยำสูงสุด — บิลยิ่งเก่าตัวเลขยิ่งคลาดเคลื่อน</div>
 </body></html>"""
 
 def render_reference_tab(purchase_df: pd.DataFrame, stock_df: pd.DataFrame = None):
