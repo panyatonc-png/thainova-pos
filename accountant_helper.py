@@ -8,6 +8,8 @@ Data access แยกเป็นฟังก์ชันต่างหาก �
 อนาคตย้ายไป Google Sheets ได้โดยแก้เฉพาะ load_*() ด้านล่าง
 """
 import os
+import re
+import difflib
 import html as _html
 import pandas as pd
 import streamlit as st
@@ -398,3 +400,105 @@ def render_reference_tab(purchase_df: pd.DataFrame, stock_df: pd.DataFrame = Non
 
     with st.expander("🖨️ ดูตัวอย่าง + พิมพ์จากหน้านี้", expanded=True):
         st.components.v1.html(html_doc, height=700, scrolling=True)
+
+# ══════════════════════════════════════════════════════════════
+# TAB 3 — จับคู่รหัสด้วยมือ (สินค้าที่เหลือ: ทินเนอร์/เคลียร์/อื่นๆ)
+# ══════════════════════════════════════════════════════════════
+@st.cache_data(ttl=600)
+def load_acc_products() -> pd.DataFrame:
+    """รายการสินค้าทั้งหมดใน AccOffice (worksheet Acc_Products)"""
+    try:
+        return _read_sheet("Acc_Products")
+    except Exception:
+        return pd.DataFrame(columns=["acc_code", "acc_name", "acc_group"])
+
+_SIM_DROP = re.compile(r"(สี|ไพแลค|ไพเเลค|PYLAC|กระป๋อง|แกลลอน|ดาว|xx|\s+)", re.I)
+
+def _sim_key(s: str) -> str:
+    return _SIM_DROP.sub("", str(s)).upper()
+
+def _num_tokens(s: str) -> set:
+    return set(re.findall(r"\d+[A-Za-z]*|[A-Za-z]+\d+", str(s).upper()))
+
+def _top_candidates(pos_name: str, accp: pd.DataFrame, n=5):
+    """คืน top-n สินค้าบัญชีที่ชื่อคล้ายที่สุด (difflib + โบนัสเลขตรง)"""
+    pk = _sim_key(pos_name)
+    pnum = _num_tokens(pos_name)
+    scored = []
+    for _, a in accp.iterrows():
+        ratio = difflib.SequenceMatcher(None, pk, _sim_key(a["acc_name"])).ratio()
+        bonus = 0.15 * len(pnum & _num_tokens(a["acc_name"]))
+        scored.append((ratio + bonus, a))
+    scored.sort(key=lambda x: -x[0])
+    return scored[:n]
+
+def _append_mapping_row(new_row: dict):
+    """เพิ่ม 1 แถวเข้า worksheet Product_Mapping"""
+    from streamlit_gsheets import GSheetsConnection
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    df = conn.read(worksheet="Product_Mapping")
+    df = df.astype(str).replace({"nan": "", "None": "", "<NA>": ""})
+    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    conn.update(worksheet="Product_Mapping", data=df)
+
+def render_match_tab(stock_df: pd.DataFrame):
+    mapping = load_mapping()
+    accp    = load_acc_products()
+
+    if accp.empty:
+        st.warning("⚠️ ยังไม่มี worksheet Acc_Products ใน Google Sheets")
+        return
+    if stock_df is None or stock_df.empty or "Barcode" not in stock_df.columns:
+        st.info("ไม่มีข้อมูล Stock")
+        return
+
+    mapped = set(mapping["pos_barcode"].astype(str))
+    s = stock_df.copy()
+    s["_bc"] = s["Barcode"].apply(_norm_barcode)
+    un = s[~s["_bc"].isin(mapped)][["_bc", "Name"]].drop_duplicates("_bc")
+
+    st.caption(f"สินค้าใน POS ที่ยังไม่มีรหัสบัญชี: **{len(un):,}** ตัว "
+               f"(จับคู่แล้ว {len(mapped):,}) — เลือกรหัสที่ถูกต้องแล้วกดยืนยันทีละตัว")
+
+    kw = st.text_input("🔍 กรองชื่อสินค้า", key="mt_kw",
+                       placeholder="เช่น ทินเนอร์, เคลียร์, SELKO",
+                       label_visibility="collapsed")
+    if kw:
+        un = un[un["Name"].str.contains(kw, case=False, na=False)]
+
+    if un.empty:
+        st.success("🎉 ไม่เหลือสินค้าที่ยังไม่จับคู่ (ตามเงื่อนไขที่กรอง)")
+        return
+
+    PAGE = 10
+    total_pages = max(1, (len(un) + PAGE - 1) // PAGE)
+    pg = st.number_input(f"หน้า (ทั้งหมด {total_pages})", min_value=1,
+                         max_value=total_pages, value=1, key="mt_pg")
+    view = un.iloc[(pg-1)*PAGE : pg*PAGE]
+
+    for _, row in view.iterrows():
+        bc, pname = row["_bc"], str(row["Name"])
+        with st.container():
+            st.markdown(f"**{pname}**  \n`{bc}`")
+            cands = _top_candidates(pname, accp)
+            opts  = ["— ยังไม่เลือก —"] + [
+                f"{a['acc_code']} | {a['acc_name'][:55]}  ({min(sc, 0.99)*100:.0f}%)"
+                for sc, a in cands]
+            c1, c2 = st.columns([5, 1])
+            sel = c1.selectbox("เลือกรหัสบัญชี", opts, key=f"mt_sel_{bc}",
+                               label_visibility="collapsed")
+            if c2.button("✓ ยืนยัน", key=f"mt_ok_{bc}",
+                         disabled=(sel == opts[0]), use_container_width=True):
+                code = sel.split(" | ")[0].strip()
+                aname = next(a["acc_name"] for sc, a in cands if a["acc_code"] == code)
+                _append_mapping_row({
+                    "pos_barcode": bc, "pos_name": pname,
+                    "acc_code": code, "acc_name": aname, "acc_unit": "",
+                    "match_source": "จับคู่มือใน WebApp",
+                    "verified": "yes",
+                    "updated": datetime.now().strftime("%Y-%m-%d"),
+                })
+                st.cache_data.clear()
+                st.success(f"✅ บันทึก {pname[:30]} → {code}")
+                st.rerun()
+            st.markdown("---")

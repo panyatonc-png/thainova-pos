@@ -2252,7 +2252,7 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
         st.rerun()
 
     atabs = st.tabs(["📋 สต็อก","🚛 สั่งของ","📥 รับเข้า","🔢 Lot","💰 การเงิน","📦 Orders",
-                     "🔎 ค้นรหัสบัญชี","📑 ใบอ้างอิงบัญชี"])
+                     "🔎 ค้นรหัสบัญชี","📑 ใบอ้างอิงบัญชี","🔗 จับคู่รหัส"])
 
     with atabs[0]:
         q = st.text_input("🔍 ค้นหา / Barcode:", key="aq")
@@ -2345,6 +2345,13 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
         st.markdown('<div class="co-section-title">📑 ใบอ้างอิงคีย์บิลซื้อ (A4)</div>', unsafe_allow_html=True)
         if HAS_ACC_HELPER:
             accountant_helper.render_reference_tab(purchase_df, stock_df)
+        else:
+            st.error("❌ ไม่พบไฟล์ accountant_helper.py ใน repo")
+
+    with atabs[8]:
+        st.markdown('<div class="co-section-title">🔗 จับคู่รหัส POS ↔ บัญชี</div>', unsafe_allow_html=True)
+        if HAS_ACC_HELPER:
+            accountant_helper.render_match_tab(stock_df)
         else:
             st.error("❌ ไม่พบไฟล์ accountant_helper.py ใน repo")
 
