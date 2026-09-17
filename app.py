@@ -11,6 +11,38 @@ try:
 except ImportError:
     HAS_QR = False
 
+# ══════════════════════════════════════════════════════════════
+# ตัดยอดซ้ำ: สินค้าชิ้นเดียวถูกกรอก 2 หน่วย (ลัง↔แพ็ค, กล่อง↔ผืน)
+# แล้วใส่ยอดเต็มซ้ำทั้งสองแถว → ทำให้ยอดซื้อในรายงานเบิ้ล
+# ══════════════════════════════════════════════════════════════
+_PACK_PREFIX_RE = re.compile(r"^\s*\(\s*\d+\s*(?:กล่อง|ลัง|แพ็ค|แพค|โหล)[^)]*\)\s*")
+_UNIT_TAIL_RE   = re.compile(r"\s*(?:1\s*)?(?:ลัง|แพ็ค|แพค|กล่อง|ผืน|โหล)\s*$")
+
+def _base_product_name(s):
+    """ตัดคำหน่วยบรรจุออกจากชื่อสินค้า เพื่อจับคู่แถวหน่วยใหญ่/หน่วยย่อยของสินค้าเดียวกัน
+    เช่น 'INTER TAPE กระดาษกาว ลัง' และ '...แพ็ค' → 'INTER TAPE กระดาษกาว'"""
+    s = str(s).strip()
+    s = _PACK_PREFIX_RE.sub("", s)
+    for _ in range(2):                       # ตัดคำหน่วยท้ายได้สูงสุด 2 ชั้น
+        s = _UNIT_TAIL_RE.sub("", s).strip()
+    return re.sub(r"\s+", " ", s)
+
+def dedupe_purchase_units(fd: pd.DataFrame) -> pd.DataFrame:
+    """ลบแถว 'หน่วยซ้ำ' ที่บันทึกสินค้าชิ้นเดียวกัน 2 หน่วย โดยใส่ยอดเต็มซ้ำทั้งคู่
+    เกณฑ์: บิลเดียวกัน + ยอดรวมสินค้าเท่ากัน + ชื่อฐานสินค้าเดียวกัน (ตัดคำหน่วยแล้ว)
+    → เก็บแถวแรก นับยอดครั้งเดียว
+    ไม่แตะแถวยอด 0 หรือสินค้าคนละตัวที่ราคาบังเอิญเท่ากัน (ชื่อฐานต่างกัน)"""
+    if fd.empty or 'ยอดรวมสินค้า' not in fd.columns or 'InvoiceNo' not in fd.columns:
+        return fd
+    d = fd.copy()
+    d['_amt_']  = pd.to_numeric(d['ยอดรวมสินค้า'], errors='coerce').fillna(0)
+    d['_base_'] = (d['ชื่อสินค้า'].apply(_base_product_name)
+                   if 'ชื่อสินค้า' in d.columns else '')
+    pos = d[d['_amt_'] > 0].drop_duplicates(
+        subset=['InvoiceNo', '_amt_', '_base_'], keep='first')
+    neg = d[d['_amt_'] <= 0]
+    return pd.concat([pos, neg]).drop(columns=['_amt_', '_base_'])
+
 try:
     import accountant_helper
     HAS_ACC_HELPER = True
@@ -2210,6 +2242,165 @@ def page_admin_orders():
 
 
 # ══════════════════════════════════════════════════════════════
+# ADMIN — Fast Movers (สินค้าขายดี/ควรสั่ง จาก SaleDate1..6)
+# ══════════════════════════════════════════════════════════════
+TIER_ORDER = {'🔥 ร้อนจัด': 0, '⚡ ขายดี': 1, '✅ เริ่มเดิน': 2, '🟡 เฝ้าดู': 3}
+
+def _is_pylac(name, supplier=""):
+    hay = f"{name} {supplier}".upper()
+    return "PYLAC" in hay or "ไพแลค" in hay
+
+def compute_fast_movers(stock_df, gate_days=90, spike_gap=60):
+    """วิเคราะห์ความเร็วขายจากคอลัมน์ SaleDate1..SaleDate6 ใน Stock
+    คืน DataFrame พร้อมคอลัมน์ Tier — จัดระดับความร้อนของสินค้า
+    Decision tree:
+      d0 > gate_days           → 💤 นิ่ง
+      c30 >= 3                 → 🔥 ร้อนจัด
+      c60 >= 3 หรือ c30 == 2   → ⚡ ขายดี (ถ้า gap_prev <= spike_gap) / 🟡 เฝ้าดู
+      c30 == 1                 → ✅ เริ่มเดิน (gap_prev <= spike_gap) / ❌ ขายโดด
+      c30 == 0 (d0 <= gate)    → 🟡 เฝ้าดู
+    """
+    sale_cols = [c for c in ['SaleDate1','SaleDate2','SaleDate3',
+                             'SaleDate4','SaleDate5','SaleDate6']
+                 if c in stock_df.columns]
+    if not sale_cols:
+        return pd.DataFrame()
+
+    sup_col = next((c for c in ['Supplier','SupplierName','ผู้ผลิต']
+                    if c in stock_df.columns), None)
+    today = pd.Timestamp(datetime.now().date())
+
+    rows = []
+    for _, r in stock_df.iterrows():
+        # อ่าน 6 วันที่ → ทิ้งช่องว่าง → sort ใหม่สุดก่อน (ไม่เชื่อลำดับคอลัมน์)
+        dates = []
+        for c in sale_cols:
+            d = pd.to_datetime(str(r.get(c, "")).strip(), errors='coerce')
+            if pd.notna(d):
+                dates.append(d.normalize())
+        dates = sorted(dates, reverse=True)
+        if not dates:
+            continue  # ไม่เคยขาย — ข้าม
+
+        last     = dates[0]
+        d0       = (today - last).days
+        c30      = sum(1 for d in dates if (today - d).days <= 30)
+        c60      = sum(1 for d in dates if (today - d).days <= 60)
+        c90      = sum(1 for d in dates if (today - d).days <= 90)
+        year_cnt = sum(1 for d in dates if d.year == today.year)
+        gap_prev = (dates[0] - dates[1]).days if len(dates) >= 2 else None
+
+        if d0 > gate_days:
+            tier = '💤 นิ่ง'
+        elif c30 >= 3:
+            tier = '🔥 ร้อนจัด'
+        elif c60 >= 3 or c30 == 2:
+            tier = '⚡ ขายดี' if (gap_prev is not None and gap_prev <= spike_gap) else '🟡 เฝ้าดู'
+        elif c30 == 1:
+            if gap_prev is None:
+                tier = '🟡 เฝ้าดู'          # ขายครั้งเดียวในระบบ — ข้อมูลน้อย
+            elif gap_prev <= spike_gap:
+                tier = '✅ เริ่มเดิน'
+            else:
+                tier = '❌ ขายโดด'          # เพิ่งขาย แต่ครั้งก่อนนานมาก
+        else:                               # c30 == 0, d0 <= gate
+            tier = '🟡 เฝ้าดู'
+
+        rows.append({
+            'Barcode':   r.get('Barcode', ''),
+            'Name':      r.get('Name', ''),
+            'Supplier':  r.get(sup_col, '') if sup_col else '',
+            'Qty':       r.get('Qty', ''),
+            'ขายล่าสุด':  last.strftime('%d/%m/%Y'),
+            'ห่าง(วัน)':  d0,
+            'ขาย30วัน':   c30,
+            'ขาย60วัน':   c60,
+            'ขายปีนี้':    year_cnt,
+            'Tier':      tier,
+            '_sort':     TIER_ORDER.get(tier, 9),
+            '_pylac':    _is_pylac(r.get('Name', ''), r.get(sup_col, '') if sup_col else ''),
+        })
+
+    fm = pd.DataFrame(rows)
+    if fm.empty:
+        return fm
+    return fm.sort_values(['_sort', 'ขาย30วัน', 'ห่าง(วัน)'],
+                          ascending=[True, False, True]).reset_index(drop=True)
+
+
+def page_admin_fast_movers(stock_df):
+    """Tab แสดงสินค้าขายดี/ควรสั่ง — คำนวณจาก SaleDate1..6
+    จัดกลุ่มตาม Supplier ไฮไลต์ PYLAC + ปุ่มเขียนกลับชีต Reorder_Fast"""
+    fm = compute_fast_movers(stock_df)
+
+    if fm.empty:
+        st.info("💡 ไม่พบคอลัมน์ SaleDate1..SaleDate6 ใน Stock หรือยังไม่มีสินค้าที่เคยขาย")
+        return
+
+    # ── ตัด 💤 นิ่ง / ❌ ขายโดด ออก เหลือเฉพาะที่ควรสนใจ ──
+    show = fm[fm['Tier'].isin(['🔥 ร้อนจัด','⚡ ขายดี','✅ เริ่มเดิน','🟡 เฝ้าดู'])].copy()
+
+    # ── Metrics ต่อ tier ──
+    cnt = show['Tier'].value_counts().to_dict()
+    m1,m2,m3,m4 = st.columns(4)
+    m1.metric("🔥 ร้อนจัด", cnt.get('🔥 ร้อนจัด', 0))
+    m2.metric("⚡ ขายดี",   cnt.get('⚡ ขายดี', 0))
+    m3.metric("✅ เริ่มเดิน", cnt.get('✅ เริ่มเดิน', 0))
+    m4.metric("🟡 เฝ้าดู",   cnt.get('🟡 เฝ้าดู', 0))
+
+    st.caption("เกณฑ์: ขายล่าสุด ≤ 90 วัน · ร้อนจัด = ขาย ≥3 ครั้ง/30 วัน · "
+               "กันขายโดด = ครั้งก่อนห่าง ≤ 60 วัน")
+
+    if show.empty:
+        st.info("📭 ยังไม่มีสินค้าเข้าเกณฑ์ขายดี/ควรสั่งในช่วงนี้")
+        return
+
+    disp_cols = ['Barcode','Name','Qty','ขายล่าสุด','ห่าง(วัน)',
+                 'ขาย30วัน','ขาย60วัน','ขายปีนี้','Tier']
+
+    def _style_pylac(df_in):
+        def _hl(row):
+            if _is_pylac(row['Name'], ''):
+                return ['background-color: rgba(201,168,76,.20)'] * len(row)
+            return [''] * len(row)
+        return df_in.style.apply(_hl, axis=1)
+
+    # ── ส่วน PYLAC โดยเฉพาะ (บนสุด) ──
+    pylac = show[show['_pylac']]
+    if not pylac.empty:
+        st.markdown('#### 🎨 PYLAC — ควรสั่ง')
+        st.dataframe(_style_pylac(pylac[disp_cols]),
+                     use_container_width=True, hide_index=True)
+        st.markdown("---")
+
+    # ── จัดกลุ่มตาม Supplier (PYLAC ปักหมุดบนสุด) ──
+    st.markdown('#### 📦 แยกตาม Supplier')
+    sups = list(show['Supplier'].fillna('').unique())
+    sups.sort(key=lambda s: (0 if _is_pylac('', s) else 1, str(s)))
+    for sup in sups:
+        grp = show[show['Supplier'].fillna('') == sup]
+        label = f"🎨 {sup}" if _is_pylac('', sup) else f"📦 {sup or '(ไม่ระบุผู้ขาย)'}"
+        with st.expander(f"{label}  ·  {len(grp)} รายการ", expanded=_is_pylac('', sup)):
+            st.dataframe(_style_pylac(grp[disp_cols]),
+                         use_container_width=True, hide_index=True)
+
+    # ── ปุ่มเขียนกลับ Google Sheet: Reorder_Fast ──
+    st.markdown("---")
+    if st.button("📤 อัปเดตชีต Reorder_Fast", key="fm_push", use_container_width=True):
+        try:
+            out = show[['Barcode','Name','Supplier','Qty','ขายล่าสุด',
+                        'ห่าง(วัน)','ขาย30วัน','ขาย60วัน','ขายปีนี้','Tier']].copy()
+            out.insert(0, 'อัปเดตเมื่อ', datetime.now().strftime('%d/%m/%Y %H:%M'))
+            conn.update(worksheet="Reorder_Fast", data=out)
+            st.cache_data.clear()
+            st.success(f"✅ อัปเดตชีต Reorder_Fast แล้ว ({len(out)} รายการ)")
+        except Exception as e:
+            st.error("❌ เขียนชีตไม่สำเร็จ — สร้าง worksheet ชื่อ **Reorder_Fast** "
+                     "ใน Google Sheet ก่อน (สร้างแท็บว่างๆ ไว้ 1 แท็บ)")
+            st.caption(f"Detail: {e}")
+
+
+# ══════════════════════════════════════════════════════════════
 # ADMIN
 # ══════════════════════════════════════════════════════════════
 def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
@@ -2251,7 +2442,7 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
         st.cache_data.clear()
         st.rerun()
 
-    atabs = st.tabs(["📋 สต็อก","🚛 สั่งของ","📥 รับเข้า","🔢 Lot","💰 การเงิน","📦 Orders",
+    atabs = st.tabs(["📋 สต็อก","🚛 สั่งของ","🔥 ควรสั่ง","📥 รับเข้า","🔢 Lot","💰 การเงิน","📦 Orders",
                      "🔎 ค้นรหัสบัญชี","📑 ใบอ้างอิงบัญชี"])
 
     with atabs[0]:
@@ -2277,6 +2468,10 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
                         st.button(f"🖨️ พิมพ์ใบสั่งซื้อ {sup}", key=f"po_{sup}")
 
     with atabs[2]:
+        st.markdown('<div class="co-section-title">🔥 สินค้าขายดี / ควรสั่ง</div>', unsafe_allow_html=True)
+        page_admin_fast_movers(stock_df)
+
+    with atabs[3]:
         if not purchase_df.empty:
             purchase_df['วันที่'] = pd.to_datetime(purchase_df['วันที่'].astype(str).str.strip(), errors='coerce', format='mixed')
             years = sorted([int(y) for y in purchase_df['วันที่'].dt.year.dropna().unique()], reverse=True)
@@ -2301,7 +2496,7 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
                                 st.dataframe(d2, use_container_width=True, hide_index=True)
                         st.button(f"🖨️ พิมพ์", key=f"p_{inv}")
 
-    with atabs[3]:
+    with atabs[4]:
         if not lot_df.empty:
             ql = st.text_input("ค้นหา:", key="lq")
             dl = lot_df[
@@ -2313,7 +2508,7 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
                   if k in dl.columns}
             st.dataframe(dl[list(cm.keys())].rename(columns=cm), use_container_width=True, hide_index=True)
 
-    with atabs[4]:
+    with atabs[5]:
         if not purchase_df.empty and 'ยอดรวมสินค้า' in purchase_df.columns:
             purchase_df['วันที่'] = pd.to_datetime(purchase_df['วันที่'].astype(str).str.strip(), errors='coerce', format='mixed')
             yf  = sorted([int(y) for y in purchase_df['วันที่'].dt.year.dropna().unique()], reverse=True)
@@ -2324,24 +2519,25 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
                                format_func=lambda x: mnf[x-1], key="fm")
             fd = purchase_df[(purchase_df['วันที่'].dt.year==yrf) & (purchase_df['วันที่'].dt.month==mof)]
             if not fd.empty:
+                fd = dedupe_purchase_units(fd)   # ตัดยอดซ้ำจากการกรอกสินค้าชิ้นเดียว 2 หน่วย
                 st.metric("ยอดซื้อรวม", f"฿{fd['ยอดรวมสินค้า'].sum():,.0f}")
                 ss = fd.groupby('ชื่อบริษัทผู้ขาย')['ยอดรวมสินค้า'].sum().reset_index()
                 ss.columns = ['ผู้ขาย','ยอดรวม(฿)']
                 st.dataframe(ss.sort_values('ยอดรวม(฿)', ascending=False),
                              use_container_width=True, hide_index=True)
 
-    with atabs[5]:
+    with atabs[6]:
         st.markdown('<div class="co-section-title">📋 รายงานออเดอร์ลูกค้า</div>', unsafe_allow_html=True)
         page_admin_orders()
 
-    with atabs[6]:
+    with atabs[7]:
         st.markdown('<div class="co-section-title">🔎 ค้นหารหัสบัญชี AccOffice</div>', unsafe_allow_html=True)
         if HAS_ACC_HELPER:
             accountant_helper.render_search_tab()
         else:
             st.error("❌ ไม่พบไฟล์ accountant_helper.py ใน repo")
 
-    with atabs[7]:
+    with atabs[8]:
         st.markdown('<div class="co-section-title">📑 ใบอ้างอิงคีย์บิลซื้อ (A4)</div>', unsafe_allow_html=True)
         if HAS_ACC_HELPER:
             accountant_helper.render_reference_tab(purchase_df, stock_df)
