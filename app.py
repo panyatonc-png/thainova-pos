@@ -2483,18 +2483,8 @@ def admin_view(stock_df, reorder_df, shelf_map_df, purchase_df, lot_df):
             filt = purchase_df[(purchase_df['วันที่'].dt.year==yr) & (purchase_df['วันที่'].dt.month==mo)]
             if filt.empty: st.info("ไม่พบข้อมูลในช่วงเวลานี้")
             else:
-                for (inv,vendor,date),items in filt.groupby(['InvoiceNo','ชื่อบริษัทผู้ขาย','วันที่']):
-                    with st.expander(f"📄 {date.strftime('%d/%m/%Y')} · {vendor} · {inv}"):
-                        if 'Barcode' in items.columns:
-                            mg = pd.merge(items, shelf_map_df[['Barcode','ShelfMap']], on='Barcode', how='left')
-                            mg['ShelfMap'] = mg['ShelfMap'].fillna("ยังไม่ได้ระบุ")
-                            nc = next((c for c in ['ชื่อสินค้า','Name'] if c in mg.columns), None)
-                            qc = next((c for c in ['จำนวน','Qty'] if c in mg.columns), None)
-                            if nc and qc:
-                                d2 = mg[[nc,qc,'ShelfMap']].copy()
-                                d2.columns = ['สินค้า','จำนวน','ที่วาง']
-                                st.dataframe(d2, use_container_width=True, hide_index=True)
-                        st.button(f"🖨️ พิมพ์", key=f"p_{inv}")
+                from receiving_helper import render_receiving_documents
+                render_receiving_documents(filt, shelf_map_df)
 
     with atabs[4]:
         if not lot_df.empty:
